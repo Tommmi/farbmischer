@@ -1,0 +1,1031 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aquarell-Farbmischer</title>
+    <style>
+        :root {
+            --bg: #1a1a2e;
+            --card: #16213e;
+            --accent: #0f3460;
+            --text: #e0e0e0;
+            --highlight: #e94560;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 8px;
+            font-size: 1.8em;
+            color: #fff;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+            font-size: 0.95em;
+        }
+
+        .input-section {
+            max-width: 700px;
+            margin: 0 auto 30px;
+            background: var(--card);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+
+        .input-row {
+            display: flex;
+            gap: 16px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+
+        .input-group {
+            flex: 1;
+            min-width: 120px;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 0.85em;
+            color: #aaa;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .input-group input[type="number"] {
+            width: 100%;
+            padding: 10px 14px;
+            border: 2px solid #333;
+            border-radius: 8px;
+            background: #0d1117;
+            color: #fff;
+            font-size: 1.1em;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .input-group input[type="number"]:focus {
+            border-color: var(--highlight);
+        }
+
+        .color-input-group {
+            min-width: 80px;
+            flex: 0;
+        }
+
+        .color-input-group input[type="color"] {
+            width: 60px;
+            height: 44px;
+            border: 2px solid #333;
+            border-radius: 8px;
+            background: #0d1117;
+            cursor: pointer;
+            padding: 2px;
+        }
+
+        .btn {
+            padding: 10px 28px;
+            background: var(--highlight);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.05em;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+
+        .btn:hover { background: #c73a52; }
+
+        .separator {
+            text-align: center;
+            color: #555;
+            margin: 12px 0;
+            font-size: 0.85em;
+        }
+
+        .result-section {
+            max-width: 700px;
+            margin: 0 auto;
+            display: none;
+        }
+
+        .result-section.visible { display: block; }
+
+        .preview-bar {
+            display: flex;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 20px;
+            height: 80px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+
+        .preview-target {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.9em;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+        }
+
+        .preview-mixed {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.9em;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+        }
+
+        .recipe-card {
+            background: var(--card);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+
+        .recipe-card h2 {
+            font-size: 1.15em;
+            margin-bottom: 14px;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .step-number {
+            background: var(--highlight);
+            color: #fff;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.85em;
+            flex-shrink: 0;
+        }
+
+        .pigment-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            background: rgba(255,255,255,0.04);
+            border-radius: 10px;
+            margin-bottom: 8px;
+        }
+
+        .pigment-swatch {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            border: 2px solid rgba(255,255,255,0.15);
+            flex-shrink: 0;
+        }
+
+        .pigment-info { flex: 1; }
+
+        .pigment-name {
+            font-weight: 700;
+            color: #fff;
+            font-size: 0.95em;
+        }
+
+        .pigment-code {
+            font-size: 0.8em;
+            color: #888;
+            font-family: 'Consolas', monospace;
+        }
+
+        .pigment-amount {
+            font-weight: 700;
+            font-size: 1.2em;
+            color: var(--highlight);
+            min-width: 50px;
+            text-align: right;
+        }
+
+        .info-text {
+            font-size: 0.9em;
+            color: #bbb;
+            line-height: 1.6;
+            margin-top: 8px;
+        }
+
+        .info-text strong { color: #fff; }
+
+        .water-bar {
+            margin-top: 12px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 10px;
+            padding: 14px;
+        }
+
+        .water-visual {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .water-drops {
+            font-size: 1.4em;
+            letter-spacing: 2px;
+        }
+
+        .water-ratio {
+            font-weight: 700;
+            color: #5bc0de;
+        }
+
+        .warning {
+            background: rgba(233, 69, 96, 0.15);
+            border-left: 3px solid var(--highlight);
+            padding: 12px 16px;
+            border-radius: 0 10px 10px 0;
+            margin-top: 12px;
+            font-size: 0.9em;
+        }
+
+        .palette-section {
+            max-width: 700px;
+            margin: 30px auto 0;
+            background: var(--card);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+
+        .palette-section h2 {
+            font-size: 1.1em;
+            margin-bottom: 14px;
+            color: #fff;
+        }
+
+        .palette-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 8px;
+        }
+
+        .palette-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            font-size: 0.8em;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .palette-item:hover {
+            background: rgba(255,255,255,0.08);
+        }
+
+        .palette-dot {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 1px solid rgba(255,255,255,0.2);
+            flex-shrink: 0;
+        }
+
+        .palette-label {
+            color: #ccc;
+            line-height: 1.2;
+        }
+
+        .palette-label small {
+            color: #777;
+            font-family: 'Consolas', monospace;
+        }
+
+        @media (max-width: 500px) {
+            .input-row { flex-direction: column; }
+            .palette-grid { grid-template-columns: 1fr 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<h1>🎨 Aquarell-Farbmischer</h1>
+<p class="subtitle">HSL/Hex-Wert eingeben → Mischrezept mit 24 Einzelpigment-Farben</p>
+
+<div class="input-section">
+    <div class="input-row">
+        <div class="input-group">
+            <label>H (Farbton 0–360°)</label>
+            <input type="number" id="inputH" min="0" max="360" value="160" step="1">
+        </div>
+        <div class="input-group">
+            <label>S (Sättigung 0–100%)</label>
+            <input type="number" id="inputS" min="0" max="100" value="65" step="1">
+        </div>
+        <div class="input-group">
+            <label>L (Helligkeit 0–100%)</label>
+            <input type="number" id="inputL" min="0" max="100" value="50" step="1">
+        </div>
+        <div>
+            <label style="display:block;margin-bottom:6px;font-size:0.85em;color:#aaa;">&nbsp;</label>
+            <button class="btn" onclick="calculate()">Mischen!</button>
+        </div>
+    </div>
+
+    <div class="separator">— oder —</div>
+
+    <div class="input-row">
+        <div class="color-input-group">
+            <label>Farbwähler</label>
+            <input type="color" id="inputColor" value="#2E8B57">
+        </div>
+        <div>
+            <label style="display:block;margin-bottom:6px;font-size:0.85em;color:#aaa;">&nbsp;</label>
+            <button class="btn" onclick="calculateFromPicker()">Mischen!</button>
+        </div>
+    </div>
+</div>
+
+<div class="result-section" id="resultSection">
+    <div class="preview-bar" id="previewBar">
+        <div class="preview-target" id="previewTarget">Zielfarbe</div>
+        <div class="preview-mixed" id="previewMixed">Ergebnis (ca.)</div>
+    </div>
+
+    <div id="recipeOutput"></div>
+</div>
+
+<div class="palette-section">
+    <h2>📋 Deine Van Gogh Palette (25 Farben)</h2>
+    <div class="palette-grid" id="paletteGrid"></div>
+</div>
+
+<script>
+const PALETTE = [
+    // --- Gelb ---
+    { id: "VG254", name: "Perm. Lemon Yellow",       hue: 56,  sat: 88, light: 72, hex: "#F0E040", pigment: "PY184" },
+    { id: "VG272", name: "Transparent Yellow Med.",   hue: 46,  sat: 82, light: 62, hex: "#DEB030", pigment: "PY128" },
+    { id: "VG244", name: "Indian Yellow",             hue: 40,  sat: 78, light: 52, hex: "#D49820", pigment: "PY83"  },
+    { id: "VG227", name: "Yellow Ochre",              hue: 38,  sat: 50, light: 50, hex: "#BF9640", pigment: "PY42"  },
+    { id: "VG296", name: "Azomethine Green Yellow",   hue: 95,  sat: 55, light: 48, hex: "#7EA830", pigment: "PY129" },
+    // --- Orange ---
+    { id: "VG278", name: "Pyrrole Orange",            hue: 22,  sat: 88, light: 52, hex: "#E86820", pigment: "PO73"  },
+    // --- Rot ---
+    { id: "VG370", name: "Permanent Red Light",       hue: 5,   sat: 82, light: 48, hex: "#D83828", pigment: "PR255" },
+    { id: "VG371", name: "Permanent Red Deep",        hue: 0,   sat: 62, light: 32, hex: "#842020", pigment: "PR149" },
+    { id: "VG331", name: "Madder Lake Deep",          hue: 348, sat: 58, light: 30, hex: "#782030", pigment: "PR264" },
+    { id: "VG339", name: "Light Oxide Red",           hue: 12,  sat: 48, light: 42, hex: "#9E5838", pigment: "PR101" },
+    // --- Rosa / Magenta ---
+    { id: "VG366", name: "Quinacridone Rose",         hue: 340, sat: 70, light: 44, hex: "#C03058", pigment: "PV19"  },
+    { id: "VG567", name: "Perm. Red Violet",          hue: 330, sat: 62, light: 38, hex: "#9C2860", pigment: "PV19"  },
+    // --- Violett / Purpur ---
+    { id: "VG592", name: "Quin. Purple Red",          hue: 318, sat: 52, light: 34, hex: "#842858", pigment: "PV55"  },
+    { id: "VG593", name: "Quin. Purple Blue",         hue: 300, sat: 48, light: 28, hex: "#6A2068", pigment: "PV55"  },
+    { id: "VG568", name: "Perm. Blue Violet",         hue: 278, sat: 68, light: 22, hex: "#381068", pigment: "PV23"  },
+    // --- Blau ---
+    { id: "VG506", name: "Ultramarine Deep",          hue: 238, sat: 72, light: 38, hex: "#2028A0", pigment: "PB29"  },
+    { id: "VG570", name: "Phthalo Blue",              hue: 215, sat: 88, light: 28, hex: "#084080", pigment: "PB15"  },
+    { id: "VG508", name: "Prussian Blue",             hue: 208, sat: 72, light: 20, hex: "#0E3050", pigment: "PB27"  },
+    // --- Türkis ---
+    { id: "VG522", name: "Turquoise Blue",            hue: 188, sat: 78, light: 35, hex: "#148078", pigment: "PB15+PG7" },
+    // --- Grün ---
+    { id: "VG633", name: "Perm. Yellowish Green",     hue: 135, sat: 62, light: 42, hex: "#30A848", pigment: "PY154+PG7" },
+    { id: "VG675", name: "Phthalo Green",             hue: 160, sat: 88, light: 25, hex: "#086040", pigment: "PG7"   },
+    // --- Erdtöne ---
+    { id: "VG411", name: "Burnt Sienna",              hue: 18,  sat: 55, light: 35, hex: "#8A4820", pigment: "PR101" },
+    { id: "VG409", name: "Burnt Umber",               hue: 25,  sat: 42, light: 22, hex: "#503018", pigment: "PBr7"  },
+    // --- Schwarz & Weiß ---
+    { id: "VG735", name: "Oxide Black",               hue: 0,   sat: 0,  light: 8,  hex: "#181818", pigment: "PBk11" },
+    { id: "VG106", name: "Opaque White",              hue: 0,   sat: 0,  light: 97, hex: "#F8F8F8", pigment: "PW6"   },
+];
+
+function hueDistance(h1, h2) {
+    let d = Math.abs(h1 - h2);
+    return d > 180 ? 360 - d : d;
+}
+
+function getContrastColor(h, s, l) {
+    return l > 55 ? "#1a1a2e" : "#ffffff";
+}
+
+function hslToHex(h, s, l) {
+    s /= 100; l /= 100;
+    const a = s * Math.min(l, 1 - l);
+    const f = n => {
+        const k = (n + h / 30) % 12;
+        const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+        return Math.round(255 * color).toString(16).padStart(2, '0');
+    };
+    return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+function hexToHsl(hex) {
+    hex = hex.replace('#', '');
+    const r = parseInt(hex.substr(0, 2), 16) / 255;
+    const g = parseInt(hex.substr(2, 2), 16) / 255;
+    const b = parseInt(hex.substr(4, 2), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+    if (max === min) {
+        h = s = 0;
+    } else {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+            case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+            case g: h = ((b - r) / d + 2) / 6; break;
+            case b: h = ((r - g) / d + 4) / 6; break;
+        }
+        h *= 360;
+    }
+    return { h: Math.round(h), s: Math.round(s * 100), l: Math.round(l * 100) };
+}
+
+function findNearestPigments(targetHue, targetLight) {
+    const chromatic = PALETTE.filter(p => p.sat > 0 && p.light > 10 && p.light < 90);
+    let sorted = chromatic
+        .map(p => ({ ...p, dist: hueDistance(targetHue, p.hue) }))
+        .sort((a, b) => {
+            // Primary sort: hue distance
+            // Within similar hue distance (±3°): balance lightness match and saturation
+            if (Math.abs(a.dist - b.dist) <= 3) {
+                const aLightDist = Math.abs(a.light - targetLight);
+                const bLightDist = Math.abs(b.light - targetLight);
+                // Score: lower is better. Lightness match weighs more than saturation bonus.
+                const aScore = aLightDist - a.sat * 0.3;
+                const bScore = bLightDist - b.sat * 0.3;
+                return aScore - bScore;
+            }
+            return a.dist - b.dist;
+        });
+    return sorted;
+}
+
+function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
+
+function toTeile(...percents) {
+    // Convert percentages to simplified single-digit parts
+    let parts = percents.map(p => Math.max(0, Math.round(p / 10)));
+    // Ensure non-zero inputs get at least 1 part
+    for (let i = 0; i < percents.length; i++) {
+        if (percents[i] > 0 && parts[i] === 0) parts[i] = 1;
+    }
+    // Simplify by GCD
+    const nonZero = parts.filter(p => p > 0);
+    if (nonZero.length >= 2) {
+        let g = nonZero[0];
+        for (let i = 1; i < nonZero.length; i++) g = gcd(g, nonZero[i]);
+        if (g > 1) parts = parts.map(p => p / g);
+    }
+    return parts;
+}
+
+function teileLabel(n) {
+    return n === 1 ? "1 Teil" : n + " Teile";
+}
+
+function findComplement(targetHue) {
+    const compHue = (targetHue + 180) % 360;
+    const chromatic = PALETTE.filter(p => p.sat > 0 && p.light > 10 && p.light < 90);
+    let sorted = chromatic
+        .map(p => ({ ...p, dist: hueDistance(compHue, p.hue) }))
+        .sort((a, b) => a.dist - b.dist);
+    return sorted[0];
+}
+
+function calculate() {
+    const hRaw = parseInt(document.getElementById('inputH').value);
+    const sRaw = parseInt(document.getElementById('inputS').value);
+    const lRaw = parseInt(document.getElementById('inputL').value);
+    const h = isNaN(hRaw) ? 0 : hRaw;
+    const s = isNaN(sRaw) ? 0 : sRaw;
+    const l = isNaN(lRaw) ? 50 : lRaw;
+    generateRecipe(h, s, l);
+}
+
+function calculateFromPicker() {
+    const hex = document.getElementById('inputColor').value;
+    const hsl = hexToHsl(hex);
+    document.getElementById('inputH').value = hsl.h;
+    document.getElementById('inputS').value = hsl.s;
+    document.getElementById('inputL').value = hsl.l;
+    generateRecipe(hsl.h, hsl.s, hsl.l);
+}
+
+function generateRecipe(h, s, l) {
+    const resultSection = document.getElementById('resultSection');
+    resultSection.classList.add('visible');
+
+    const targetHex = hslToHex(h, s, l);
+    const targetContrast = getContrastColor(h, s, l);
+
+    document.getElementById('previewTarget').style.background = targetHex;
+    document.getElementById('previewTarget').style.color = targetContrast;
+    document.getElementById('previewTarget').textContent = `Ziel: HSL(${h}°, ${s}%, ${l}%)`;
+
+    const nearest = findNearestPigments(h, l);
+    const complement = findComplement(h);
+    const white = PALETTE.reduce((a, b) => a.light > b.light ? a : b);
+    const black = PALETTE.reduce((a, b) => a.light < b.light ? a : b);
+    // Find darkener: prefer dark pigments close in hue (weighted score)
+    const darkener = PALETTE.filter(p => p.sat > 0 && p.light < 40)
+                           .map(p => ({ ...p, score: p.light + hueDistance(h, p.hue) * 0.5 }))
+                           .sort((a, b) => a.score - b.score)[0];
+
+    const isNeutral = s < 10;
+
+    // Compute primary/secondary pigments and ratios (used in steps 1 and 3)
+    let primary = nearest[0];
+    let secondary = null;
+    let primaryRatio = 100, secondaryRatio = 0;
+
+    if (!isNeutral) {
+        if (primary.dist <= 5) {
+            primaryRatio = 100;
+        } else {
+            secondary = nearest.find(p => {
+                const d1 = (h - primary.hue + 360) % 360;
+                const d2 = (h - p.hue + 360) % 360;
+                return p.id !== primary.id && ((d1 <= 180 && d2 > 180) || (d1 > 180 && d2 <= 180));
+            });
+            if (!secondary) secondary = nearest[1];
+
+            const distA = hueDistance(h, primary.hue);
+            const distB = hueDistance(h, secondary.hue);
+            const total = distA + distB;
+
+            if (total === 0) {
+                primaryRatio = 100;
+                secondaryRatio = 0;
+            } else {
+                primaryRatio = Math.round((1 - distA / total) * 100);
+                secondaryRatio = 100 - primaryRatio;
+            }
+        }
+    }
+
+    // Pre-compute lightness gap and step3 mode to choose rendering path
+    let baseL = primary.light;
+    if (!isNeutral && secondary && secondaryRatio > 0) {
+        baseL = Math.round(primary.light * primaryRatio / 100 + secondary.light * secondaryRatio / 100);
+    }
+    let adjustedBaseL = baseL;
+    if (!isNeutral) {
+        if (s < 20) {
+            adjustedBaseL = Math.round(baseL * 0.3 + white.light * 0.7);
+        } else if (s < 50) {
+            const whiteFrac = (100 - s) * 0.0015;
+            adjustedBaseL = Math.round(baseL * (1 - whiteFrac) + white.light * whiteFrac);
+        }
+    }
+    const gap = isNeutral ? 0 : l - adjustedBaseL;
+
+    // Determine if step 3 will override the base with darkener+black
+    let step3Mode = 'normal';
+    if (!isNeutral && gap < -15) {
+        if (l >= darkener.light) {
+            step3Mode = 'normal';
+        } else if (l >= black.light) {
+            step3Mode = 'darkener-plus-black';
+        } else {
+            step3Mode = 'darkener-plus-black-layering';
+        }
+    }
+    const isDarkenerBase = step3Mode.startsWith('darkener-plus-black');
+
+    let recipe = [];
+    let html = '';
+
+    // === DARK COLOR SHORTCUT: darkener-plus-black renders a compact recipe ===
+    if (isDarkenerBase) {
+        const darkenerIsPrimary = darkener.id === primary.id;
+        const hueDist = hueDistance(h, darkener.hue);
+
+        html += `<div class="recipe-card">`;
+        html += `<h2><span class="step-number">1</span> Mischrezept (sehr dunkel, L=${l}%)</h2>`;
+
+        html += `<div class="info-text">
+            Zielfarbe ist <strong>sehr dunkel</strong> — verwende <strong>${darkener.name}</strong> (L=${darkener.light}%) als Hauptfarbe
+            und dunkle mit Schwarz ab:
+        </div>`;
+
+        // Main pigment: darkener
+        html += renderPigmentRow(darkener, "10 Teile",
+            `Hauptfarbe (Hue ${darkener.hue}°, L=${darkener.light}%)`);
+
+        // Black amount (capped at 10)
+        if (step3Mode === 'darkener-plus-black') {
+            const rawBlack = Math.round(10 * (darkener.light - l) / Math.max(1, l - black.light));
+            const dkBlack = Math.min(10, Math.max(1, rawBlack));
+            html += renderPigmentRow(black, `~${teileLabel(dkBlack)}`,
+                `Schwarz zum Abdunkeln auf L≈${l}%`);
+            if (rawBlack > 10) {
+                html += `<div class="info-text">
+                    Pur und deckend auftragen. Ggf. <strong>mehrere Schichten</strong> für die nötige Tiefe.
+                </div>`;
+            }
+        } else {
+            // darkener-plus-black-layering
+            html += renderPigmentRow(black, "viel",
+                `Schwarz zum Abdunkeln (Ziel L=${l}% ist dunkler als Schwarz L=${black.light}%)`);
+            html += `<div class="info-text">
+                Pur und deckend auftragen, ggf. <strong>mehrere Schichten</strong> übereinander.
+            </div>`;
+        }
+
+        // Optional hue correction (only if darkener hue is far from target)
+        if (!darkenerIsPrimary && hueDist > 5) {
+            html += renderPigmentRow(primary, "~1–2 Teile",
+                `Optional: Hue-Korrektur Richtung ${h}° (${primary.name} Hue ${primary.hue}°)`);
+        }
+
+        // Saturation note (only if s < 80, and only as minor note)
+        if (s >= 20 && s < 80) {
+            html += `<div class="info-text" style="color:#888;font-size:0.85em;margin-top:8px;">
+                Optional: Winzige Spur <strong>${complement.name}</strong> (${complement.id}) zum leichten Entsättigen.
+                Bei dieser Dunkelheit ist der Effekt minimal.
+            </div>`;
+        }
+
+        html += `</div>`;
+
+        // Water + warning
+        const waterRatio = "pur";
+        html += `<div class="recipe-card">`;
+        html += `<h2><span class="step-number">2</span> Auftrag</h2>`;
+        html += `<div class="water-bar">
+            <div class="water-visual">
+                <span class="water-drops">💧</span>
+                <div>
+                    <div class="water-ratio">Farbe : Wasser = pur</div>
+                    <div style="color:#888;font-size:0.85em;margin-top:2px;">Pur auftragen — kein Verdünnen.</div>
+                </div>
+            </div>
+        </div>`;
+        html += `<div class="warning">
+            ⚠️ <strong>Aquarell trocknet 10–15% heller!</strong>
+            Mische etwas dunkler als dein Ziel-Lightness. Statt L=${l}% mische für ca. L=${Math.max(0, l - 12)}%.
+        </div>`;
+        html += `</div>`;
+
+        // Summary
+        html += `<div class="recipe-card">`;
+        html += `<h2><span class="step-number">✓</span> Zusammenfassung</h2>`;
+        const summaryParts = [];
+        summaryParts.push(`<strong>${darkener.name}</strong> (${darkener.id}) — Hauptfarbe`);
+        summaryParts.push(`+ <strong>${black.name}</strong> (${black.id}) zum Abdunkeln`);
+        if (!darkenerIsPrimary && hueDist > 5)
+            summaryParts.push(`+ Spur <strong>${primary.name}</strong> (${primary.id}) für Hue-Korrektur`);
+        html += `<div class="info-text" style="font-size:1em;line-height:1.8;">
+            ${summaryParts.join('<br>')}
+            <br>Verdünnung: <strong>pur</strong> (Farbe:Wasser)
+            <br><br>
+            <span style="color:#888;">Hex: ${targetHex.toUpperCase()} → HSL(${h}°, ${s}%, ${l}%)</span>
+        </div>`;
+        html += `</div>`;
+
+        document.getElementById('recipeOutput').innerHTML = html;
+
+        const mixedHex = hslToHex(h, s, l);
+        const mixedContrast = getContrastColor(h, s, l);
+        document.getElementById('previewMixed').style.background = mixedHex;
+        document.getElementById('previewMixed').style.color = mixedContrast;
+        document.getElementById('previewMixed').textContent = `Ergebnis (ca.)`;
+        resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+    }
+
+    // === NORMAL 3-STEP RECIPE ===
+
+    // --- Step 1: Base color ---
+    html += `<div class="recipe-card">`;
+
+    if (isNeutral) {
+        // Neutral/grey: use black + white as base
+        html += `<h2><span class="step-number">1</span> Grauton-Basis (Sättigung nur ${s}%)</h2>`;
+
+        if (l >= 85) {
+            html += renderPigmentRow(white, "~9 Teile", `Basis: fast reines Weiß`);
+            html += renderPigmentRow(black, "~1 Teil", `Spur Schwarz für leichtes Grau`);
+        } else if (l >= 60) {
+            const blackPct = Math.round((85 - l) * 1.5);
+            const [wT, bT] = toTeile(100 - blackPct, blackPct);
+            html += renderPigmentRow(white, `~${teileLabel(wT)}`, `Hauptanteil Weiß`);
+            html += renderPigmentRow(black, `~${teileLabel(bT)}`, `Schwarz für mittleres Grau`);
+        } else if (l >= 35) {
+            const whitePct = Math.round((l - 10) * 1.2);
+            const [bT, wT] = toTeile(100 - whitePct, whitePct);
+            html += renderPigmentRow(black, `~${teileLabel(bT)}`, `Hauptanteil Schwarz`);
+            html += renderPigmentRow(white, `~${teileLabel(wT)}`, `Weiß zum Aufhellen`);
+        } else {
+            html += renderPigmentRow(black, "pur (10 Teile)", `Fast reines Schwarz`);
+            if (l > 10) html += renderPigmentRow(white, "~1 Teil", `Spur Weiß`);
+        }
+
+        if (s > 0) {
+            html += `<div class="info-text" style="margin-top:12px;">
+                <strong>Farbstich Hue ${h}°:</strong> Eine winzige Spur der folgenden Farbe zumischen:
+            </div>`;
+            html += renderPigmentRow(primary, "Spur", `Hue ${primary.hue}° für leichten Farbstich`);
+        }
+
+        html += `<div class="info-text">
+            Mische Schwarz + Weiß zum passenden Grauton, dann ggf. minimal Farbe für den Stich.
+        </div>`;
+    } else {
+        // Chromatic: render step 1
+        recipe.push({ pigment: primary, percent: primaryRatio });
+        if (secondaryRatio > 0) {
+            recipe.push({ pigment: secondary, percent: secondaryRatio });
+        }
+
+        html += `<h2><span class="step-number">1</span> Grundfarbe (Hue ${h}°)</h2>`;
+
+        if (primary.dist <= 5) {
+            html += renderPigmentRow(primary, "pur (10 Teile)", `Direkttreffer! Hue-Abstand nur ${primary.dist}°`);
+        } else {
+            // No GCD simplification — keep 10-Teile scale so Step 2 ("auf 10 Teile") is consistent
+            const pT = Math.max(1, Math.round(primaryRatio / 10));
+            const sT = Math.max(1, Math.round(secondaryRatio / 10));
+            html += renderPigmentRow(primary, teileLabel(pT),
+                `Hue ${primary.hue}° — Abstand ${primary.dist}°`);
+            if (secondary && secondaryRatio > 0) {
+                html += renderPigmentRow(secondary, teileLabel(sT),
+                    `Hue ${secondary.hue}° — Abstand ${hueDistance(h, secondary.hue)}°`);
+            }
+        }
+
+        html += `<div class="info-text">
+            Mische diese Pigmente im angegebenen Verhältnis als Basis.
+        </div>`;
+    }
+    html += `</div>`;
+
+    // --- Step 2: Saturation ---
+    html += `<div class="recipe-card">`;
+    html += `<h2><span class="step-number">2</span> Sättigung anpassen (${s}%)</h2>`;
+
+    if (isNeutral) {
+        html += `<div class="info-text">
+            <strong>Nahezu neutral (${s}%)</strong> — Sättigung wird bereits über die Grauton-Basis in Schritt 1 gesteuert.
+            Kein zusätzlicher Schritt nötig.
+        </div>`;
+    } else if (s >= 80) {
+        html += `<div class="info-text">
+            <strong>Hohe Sättigung</strong> — Farbe pur verwenden, keine Entsättigung nötig.
+        </div>`;
+    } else if (s >= 50) {
+        const compAmount = Math.round((100 - s) * 0.3);
+        const [cT] = toTeile(compAmount);
+        html += `<div class="info-text">
+            <strong>Leicht entsättigt</strong> — auf ca. 10 Teile Grundfarbe etwa ${teileLabel(cT)} Komplementärfarbe:
+        </div>`;
+        html += renderPigmentRow(complement, "~" + teileLabel(cT),
+            `Komplementär zu ${h}° → ${(h + 180) % 360}° (nächstes Pigment: Hue ${complement.hue}°)`);
+        html += `<div class="info-text">
+            Vorsichtig zudosieren! Zu viel Komplementärfarbe ergibt Grau/Braun.
+        </div>`;
+    } else if (s >= 20) {
+        const compAmount = Math.round((100 - s) * 0.2);
+        const whiteAmount = Math.round((100 - s) * 0.15);
+        const [cT, wT] = toTeile(compAmount, whiteAmount);
+        html += `<div class="info-text">
+            <strong>Deutlich entsättigt</strong> — auf ca. 10 Teile Grundfarbe hinzufügen:
+        </div>`;
+        html += renderPigmentRow(complement, "~" + teileLabel(cT),
+            `Komplementär (Hue ${complement.hue}°)`);
+        html += renderPigmentRow(white, "~" + teileLabel(wT),
+            `Für gedeckteren, pastelligeren Ton`);
+    } else {
+        html += `<div class="info-text">
+            <strong>Stark entsättigt (${s}%)</strong> — hauptsächlich Weiß mit etwas Farbe:
+        </div>`;
+        html += renderPigmentRow(white, "~7 Teile", `Hauptanteil Weiß`);
+        html += renderPigmentRow(primary, "~3 Teile", `Grundfarbe`);
+        html += `<div class="info-text">
+            Nur wenig Grundfarbe zumischen.
+        </div>`;
+    }
+
+    html += `</div>`;
+
+    // --- Step 3: Lightness ---
+    html += `<div class="recipe-card">`;
+    html += `<h2><span class="step-number">3</span> Helligkeit steuern (${l}%)</h2>`;
+
+    let waterRatio, waterDrops, waterText;
+
+    if (isNeutral) {
+        // Neutral: lightness is fully controlled by black/white ratio in step 1
+        if (l >= 70) {
+            waterRatio = "1:3";
+            waterDrops = "💧💧💧";
+            waterText = "Moderate Verdünnung für gleichmäßigen Auftrag.";
+        } else if (l >= 40) {
+            waterRatio = "1:1.5";
+            waterDrops = "💧💧";
+            waterText = "Wenig Wasser — deckender Auftrag.";
+        } else {
+            waterRatio = "1:0.5";
+            waterDrops = "💧";
+            waterText = "Kaum Wasser — dicker, deckender Auftrag.";
+        }
+        html += `<div class="info-text">
+            <strong>Helligkeit wird über das Schwarz-Weiß-Verhältnis in Schritt 1 gesteuert.</strong>
+            Hier nur die Wassermenge für die gewünschte Auftragsstärke wählen.
+        </div>`;
+    } else {
+        // Chromatic: lightness via water dilution and darkening
+        // baseL, adjustedBaseL, gap already computed above
+
+        html += `<div class="info-text" style="color:#666;font-size:0.8em;">
+            Pigment-Basis: L≈${adjustedBaseL}% → Ziel: L=${l}% (Differenz: ${gap > 0 ? '+' : ''}${gap})
+        </div>`;
+
+        if (gap >= 50) {
+            waterRatio = "1:8+";
+            waterDrops = "💧💧💧💧💧💧💧💧";
+            waterText = "Sehr stark verdünnen — hauchzarte Lasur.";
+        } else if (gap >= 35) {
+            waterRatio = "1:5";
+            waterDrops = "💧💧💧💧💧";
+            waterText = "Stark verdünnen — helle, transparente Schicht.";
+        } else if (gap >= 20) {
+            waterRatio = "1:3";
+            waterDrops = "💧💧💧";
+            waterText = "Moderate Verdünnung — mittlere Intensität.";
+        } else if (gap >= 10) {
+            waterRatio = "1:1.5";
+            waterDrops = "💧💧";
+            waterText = "Leicht verdünnen — gute Intensität.";
+        } else if (gap >= 0) {
+            waterRatio = "1:0.5";
+            waterDrops = "💧";
+            waterText = "Kaum verdünnen — Pigment passt zur Ziel-Helligkeit.";
+        } else if (gap >= -15) {
+            waterRatio = "1:0.5";
+            waterDrops = "💧";
+            waterText = "Fast pur auftragen — Pigment ist etwas heller als Ziel.";
+            if (gap < -5) {
+                if (l > darkener.light) {
+                    const dkTeile = Math.max(1, Math.round(10 * (adjustedBaseL - l) / (l - darkener.light)));
+                    html += renderPigmentRow(darkener, `~${teileLabel(dkTeile)}`,
+                        `Zum Abdunkeln (hue-nah, auf 10 Teile Grundfarbe)`);
+                } else {
+                    html += `<div class="info-text">
+                        Pur und deckend auftragen. Ggf. <strong>${darkener.name} (${darkener.id})</strong> zumischen
+                        — aber Ziel (L=${l}%) ist dunkler als ${darkener.name} (L=${darkener.light}%), daher mehrere Schichten nötig.
+                    </div>`;
+                }
+            }
+        } else {
+            waterRatio = "pur";
+            waterDrops = "";
+            waterText = "Pur auftragen + abdunkeln.";
+            // Normal darkening: hue-aware darkener can reach target
+            // (darkener-plus-black cases handled by early return above)
+            const dkTeile = Math.max(1, Math.round(10 * (adjustedBaseL - l) / Math.max(1, l - darkener.light)));
+            html += renderPigmentRow(darkener, `~${teileLabel(dkTeile)}`,
+                `Zum Abdunkeln (hue-nah, auf 10 Teile Grundfarbe)`);
+            if (complement.id !== darkener.id && dkTeile <= 3) {
+                html += `<div class="info-text">
+                    Alternativ: Statt ${darkener.name} kannst du auch <strong>${complement.name} (${complement.id})</strong>
+                    zum Abdunkeln verwenden — verändert aber den Farbcharakter stärker.
+                </div>`;
+            }
+        }
+
+        if (s < 20 && l >= 60) {
+            html += `<div class="info-text">
+                <strong>Hinweis:</strong> Die Helligkeit wird größtenteils durch das Weiß in Schritt 2 erreicht.
+            </div>`;
+        }
+    }
+
+    html += `<div class="water-bar">
+        <div class="water-visual">
+            <span class="water-drops">${waterDrops}</span>
+            <div>
+                <div class="water-ratio">Farbe : Wasser = ${waterRatio}</div>
+                <div style="color:#888;font-size:0.85em;margin-top:2px;">${waterText}</div>
+            </div>
+        </div>
+    </div>`;
+
+    html += `<div class="warning">
+        ⚠️ <strong>Aquarell trocknet 10–15% heller!</strong>
+        Mische etwas dunkler als dein Ziel-Lightness. Statt L=${l}% mische für ca. L=${Math.max(0, l - 12)}%.
+    </div>`;
+
+    html += `</div>`;
+
+    // --- Step 4: Summary ---
+    html += `<div class="recipe-card">`;
+    html += `<h2><span class="step-number">✓</span> Zusammenfassung</h2>`;
+
+    const summaryParts = [];
+    if (isNeutral) {
+        summaryParts.push(`<strong>${white.name}</strong> (${white.id}) + <strong>${black.name}</strong> (${black.id})`);
+        if (s > 0) summaryParts.push(`+ Spur <strong>${nearest[0].name}</strong> (${nearest[0].id}) für Farbstich`);
+    } else {
+        // Normal chromatic path (darkener-plus-black handled by early return)
+        summaryParts.push(`<strong>${primary.name}</strong> (${primary.id})`);
+        if (s >= 20 && s < 80)
+            summaryParts.push(`+ Spur <strong>${complement.name}</strong> (${complement.id})`);
+        if (s < 50)
+            summaryParts.push(`+ <strong>${white.name}</strong> (${white.id})`);
+    }
+
+    html += `<div class="info-text" style="font-size:1em;line-height:1.8;">
+        ${summaryParts.join('<br>')}
+        <br>Verdünnung: <strong>${waterRatio}</strong> (Farbe:Wasser)
+        <br><br>
+        <span style="color:#888;">Hex: ${targetHex.toUpperCase()} → HSL(${h}°, ${s}%, ${l}%)</span>
+    </div>`;
+
+    html += `</div>`;
+
+    document.getElementById('recipeOutput').innerHTML = html;
+
+    // Approximate mixed color for preview
+    let mixedH = h;
+    let mixedS = s;
+    let mixedL = l;
+    const mixedHex = hslToHex(mixedH, mixedS, mixedL);
+    const mixedContrast = getContrastColor(mixedH, mixedS, mixedL);
+    document.getElementById('previewMixed').style.background = mixedHex;
+    document.getElementById('previewMixed').style.color = mixedContrast;
+    document.getElementById('previewMixed').textContent = `Ergebnis (ca.)`;
+
+    resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderPigmentRow(pigment, amount, detail) {
+    const label = pigment.pigment ? `${pigment.id} (${pigment.pigment})` : pigment.id;
+    return `<div class="pigment-row">
+        <div class="pigment-swatch" style="background:${pigment.hex};"></div>
+        <div class="pigment-info">
+            <div class="pigment-name">${pigment.name}</div>
+            <div class="pigment-code">${label} · ${detail || 'Hue ' + pigment.hue + '°'}</div>
+        </div>
+        <div class="pigment-amount">${amount}</div>
+    </div>`;
+}
+
+// Render palette grid
+function renderPalette() {
+    const grid = document.getElementById('paletteGrid');
+    grid.innerHTML = PALETTE.map(p => `
+        <div class="palette-item" onclick="quickSelect(${p.hue}, ${p.sat}, ${p.light})"
+             title="HSL(${p.hue}°, ${p.sat}%, ${p.light}%)">
+            <div class="palette-dot" style="background:${p.hex};"></div>
+            <div class="palette-label">
+                ${p.name}<br>
+                <small>${p.id} · ${p.pigment || ''}</small>
+            </div>
+        </div>
+    `).join('');
+}
+
+function quickSelect(h, s, l) {
+    document.getElementById('inputH').value = h;
+    document.getElementById('inputS').value = s;
+    document.getElementById('inputL').value = l;
+    calculate();
+}
+
+// Enter key support
+['inputH', 'inputS', 'inputL'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => {
+        if (e.key === 'Enter') calculate();
+    });
+});
+
+renderPalette();
+</script>
+
+</body>
+</html>
