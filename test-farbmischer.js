@@ -34,7 +34,7 @@ function hueDistance(h1, h2) {
     return d > 180 ? 360 - d : d;
 }
 
-function findNearestPigments(targetHue, targetLight) {
+function findNearestPigments(targetHue, targetLight, targetSat) {
     var chromatic = [];
     for (var i = 0; i < PALETTE.length; i++) {
         var p = PALETTE[i];
@@ -51,12 +51,21 @@ function findNearestPigments(targetHue, targetLight) {
         result.push(obj);
     }
     result.sort(function(a, b) {
+        if (targetSat !== undefined && targetSat < 20) {
+            var hueBand = 10;
+            if (Math.abs(a.dist - b.dist) <= hueBand) {
+                var aScore = Math.abs(a.light - targetLight) + a.sat * 0.5;
+                var bScore = Math.abs(b.light - targetLight) + b.sat * 0.5;
+                return aScore - bScore;
+            }
+            return a.dist - b.dist;
+        }
         if (Math.abs(a.dist - b.dist) <= 3) {
             var aLightDist = Math.abs(a.light - targetLight);
             var bLightDist = Math.abs(b.light - targetLight);
-            var aScore = aLightDist - a.sat * 0.3;
-            var bScore = bLightDist - b.sat * 0.3;
-            return aScore - bScore;
+            var aScore2 = aLightDist - a.sat * 0.3;
+            var bScore2 = bLightDist - b.sat * 0.3;
+            return aScore2 - bScore2;
         }
         return a.dist - b.dist;
     });
@@ -117,7 +126,7 @@ function assert(condition, msg) {
 }
 
 function analyzeRecipe(h, s, l) {
-    var nearest = findNearestPigments(h, l);
+    var nearest = findNearestPigments(h, l, s);
     var complement = findComplement(h);
     var white = PALETTE[0];
     for (var i = 1; i < PALETTE.length; i++) {
@@ -143,6 +152,16 @@ function analyzeRecipe(h, s, l) {
     var isNeutral = s < 10;
 
     var primary = nearest[0];
+    // Hue-stability guard: prefer exact hue match (dist=0) over composite-score winner
+    // to prevent primary-flip causing non-monotonic water ratios across L values
+    if (!isNeutral && s >= 20 && primary.dist > 0) {
+        for (var i = 1; i < nearest.length; i++) {
+            if (nearest[i].dist === 0) {
+                primary = nearest[i];
+                break;
+            }
+        }
+    }
     var secondary = null;
     var primaryRatio = 100, secondaryRatio = 0;
 
@@ -182,12 +201,14 @@ function analyzeRecipe(h, s, l) {
 
     var adjustedBaseL = baseL;
     var verylowWhiteFrac = 0;
+    var verylowTotalWhite = 0;
     if (!isNeutral) {
         if (s < 20) {
             var maxWf = 0.7;
             var wfForTarget = (l - baseL) / Math.max(1, white.light - baseL);
             verylowWhiteFrac = Math.min(maxWf, Math.max(0, wfForTarget));
             adjustedBaseL = Math.round(baseL * (1 - verylowWhiteFrac) + white.light * verylowWhiteFrac);
+            verylowTotalWhite = Math.round(verylowWhiteFrac * 10);
         } else if (s < 50) {
             var whiteFrac = (100 - s) * 0.0015;
             adjustedBaseL = Math.round(baseL * (1 - whiteFrac) + white.light * whiteFrac);
@@ -212,16 +233,23 @@ function analyzeRecipe(h, s, l) {
     }
 
     // Summary logic depends on step3 mode (computed below)
-    var summaryHasWhite = !isNeutral && ((s >= 20 && s < 50) || (s < 20 && verylowWhiteFrac > 0));
+    var summaryHasWhite = !isNeutral && ((s >= 20 && s < 50) || (s < 20 && verylowTotalWhite > 0));
 
     // Step 3 effective darkener: in "pur" branch, when darkener can't reach target,
     // use darkener as main base + black (instead of drowning primary in black)
     var step3DarkenerMode = "hue-aware";
     var step3BlackTeile = 0;
     var step3NeedsLayering = false;
-    if (!isNeutral && gap < -15) {
+    var darkenerHueDist = hueDistance(h, darkener.hue);
+    if (!isNeutral && (gap < -15 || (l < darkener.light - 3 && darkenerHueDist <= 30))) {
         if (l >= darkener.light) {
             step3DarkenerMode = "hue-aware";
+        } else if (darkenerHueDist > 45) {
+            // Darkener too far in hue — use primary + black instead
+            step3DarkenerMode = "primary-plus-black";
+            var rawBlack2 = Math.round(10 * (baseL - l) / Math.max(1, l - black.light));
+            step3BlackTeile = Math.min(10, Math.max(1, rawBlack2));
+            step3NeedsLayering = rawBlack2 > 10;
         } else if (l >= black.light) {
             // Darkener becomes main base, black supplements (capped at 10)
             step3DarkenerMode = "darkener-plus-black";
@@ -236,9 +264,11 @@ function analyzeRecipe(h, s, l) {
 
     // Summary: in darkener-plus-black modes, darkener is main pigment, no white
     var isDarkenerBase = step3DarkenerMode.indexOf("darkener-plus-black") === 0;
-    var summaryHasComplement = !isNeutral && s >= 20 && s < 80;
-    if (isDarkenerBase) {
+    var isPrimaryPlusBlack = step3DarkenerMode === "primary-plus-black";
+    var summaryHasComplement = !isNeutral && s < 80;
+    if (isDarkenerBase || isPrimaryPlusBlack) {
         summaryHasWhite = false;
+        waterRatio = "pur";
     }
     var summaryMainPigment = isDarkenerBase ? darkener : primary;
 
@@ -335,6 +365,14 @@ function computeMixedColor(h, s, l) {
             var tintRgb = hslToRgb(tint.hue, tint.sat, tint.light);
             pigments.push({ rgb: tintRgb, teile: 0.5 });
         }
+    } else if (r.step3DarkenerMode === "primary-plus-black") {
+        // Darkener too far in hue — use primary + black to preserve hue
+        var ppbRgb = hslToRgb(r.primary.hue, r.primary.sat, r.primary.light);
+        pigments.push({ rgb: ppbRgb, teile: 10 });
+        if (r.step3BlackTeile > 0) {
+            var ppbBlack = hslToRgb(r.black.hue, r.black.sat, r.black.light);
+            pigments.push({ rgb: ppbBlack, teile: r.step3BlackTeile });
+        }
     } else if (r.step3DarkenerMode.indexOf("darkener-plus-black") === 0) {
         // Dark color shortcut: darkener as main + black
         var dkRgb = hslToRgb(r.darkener.hue, r.darkener.sat, r.darkener.light);
@@ -397,19 +435,37 @@ function computeMixedColor(h, s, l) {
                 pigments.push({ rgb: wRgb, teile: wT2 });
             }
         } else {
-            // s < 20: variable white based on verylowWhiteFrac
+            // s < 20: variable white based on verylowWhiteFrac + complement for desaturation
             var wTeile2 = Math.round(r.verylowWhiteFrac * 10);
             var cTeile2 = 10 - wTeile2;
-            pigments[0].teile = cTeile2;
-            if (wTeile2 > 0) {
-                var wRgb2 = hslToRgb(r.white.hue, r.white.sat, r.white.light);
-                pigments.push({ rgb: wRgb2, teile: wTeile2 });
+            // Scale primary+secondary proportionally to fit cTeile2 (matches display)
+            if (pigments.length > 1 && pigments[1].teile > 0) {
+                var origTotal = pigments[0].teile + pigments[1].teile;
+                var newPrimary = Math.round(cTeile2 * pigments[0].teile / origTotal);
+                pigments[1].teile = cTeile2 - newPrimary;
+                pigments[0].teile = newPrimary;
+            } else {
+                pigments[0].teile = cTeile2;
             }
+            var totalWhite = wTeile2;
+            if (totalWhite > 0) {
+                var wRgb2 = hslToRgb(r.white.hue, r.white.sat, r.white.light);
+                pigments.push({ rgb: wRgb2, teile: totalWhite });
+            }
+            // Add complement for desaturation (low-sat targets need neutralization)
+            // Scale by how far below 20 target s is, and how saturated the primary pigment is
+            var primarySatFactor = Math.max(1, r.primary.sat / 60);
+            var compDesat = Math.max(2, Math.round((20 - s) * 0.4 * primarySatFactor));
+            if (totalWhite === 0) compDesat++;
+            compDesat = Math.min(5, compDesat);
+            var cDesatRgb = hslToRgb(r.complement.hue, r.complement.sat, r.complement.light);
+            pigments.push({ rgb: cDesatRgb, teile: compDesat });
         }
 
         // Step 3: darkener for gap < -5 in the "1:0.5" branch or gap < -15 normal
         if (r.gap < -15 && r.step3DarkenerMode === "hue-aware") {
-            var dkTeile = Math.max(1, Math.round(10 * (r.adjustedBaseL - l) / Math.max(1, l - r.darkener.light)));
+            var span = Math.max(1, r.adjustedBaseL - r.darkener.light);
+            var dkTeile = Math.min(10, Math.max(1, Math.round(10 * (r.adjustedBaseL - l) / span)));
             var dkRgb2 = hslToRgb(r.darkener.hue, r.darkener.sat, r.darkener.light);
             pigments.push({ rgb: dkRgb2, teile: dkTeile });
         } else if (r.gap >= -15 && r.gap < -5) {
@@ -483,10 +539,10 @@ assert(!r.summaryHasComplement, "Summary should NOT have complement for s>=80");
 // --- Test 2: Stark entsaettigt hell ---
 WScript.Echo("TEST 2: HSL(33, 15, 80) - helles Beige");
 r = analyzeRecipe(33, 15, 80);
-assert(r.primary.id === "VG244",
-    "Primary should be VG244 (score-sort: lightDist 28 - sat*0.3=23.4 beats VG227), got " + r.primary.id);
+assert(r.primary.id === "VG227",
+    "Primary should be VG227 (low-sat prefers muted pigments: sat=50 vs VG244 sat=78), got " + r.primary.id);
 assert(r.satBranch === "verylow", "Sat 15% should be 'verylow', got " + r.satBranch);
-assert(!r.summaryHasComplement, "Summary should NOT have complement for s<20, got " + r.summaryHasComplement);
+assert(r.summaryHasComplement, "Summary should have complement for s<20 (desaturation)");
 assert(r.summaryHasWhite, "Summary should have white for s<50");
 // With lightness-aware selection, primary may vary — check adjustedBaseL is reasonable
 WScript.Echo("  Primary: " + r.primary.id + " L=" + r.primary.light + " adjustedBaseL=" + r.adjustedBaseL + " gap=" + r.gap);
@@ -613,7 +669,7 @@ assert(!r.summaryHasWhite, "Should NOT have white for s=50 (>=50)");
 WScript.Echo("TEST 19: HSL(240, 15, 20) - dunkles entsaettigtes Blau");
 r = analyzeRecipe(240, 15, 20);
 assert(r.satBranch === "verylow", "Should be verylow");
-assert(!r.summaryHasComplement, "No complement for s<20");
+assert(r.summaryHasComplement, "Should have complement for s<20 (desaturation)");
 // VG506 L=38, wfForTarget=(20+10-38)/(97-38)=-0.14 -> 0, no white!
 // adjustedBaseL=38, gap=20-38=-18
 WScript.Echo("  baseL=" + r.baseL + " adjustedBaseL=" + r.adjustedBaseL + " gap=" + r.gap + " whiteFrac=" + r.verylowWhiteFrac.toFixed(2));
@@ -828,17 +884,14 @@ r = analyzeRecipe(27, 15, 62);
 WScript.Echo("  Primary: " + r.primary.id + " L=" + r.primary.light + " baseL=" + r.baseL);
 WScript.Echo("  adjustedBaseL=" + r.adjustedBaseL + " gap=" + r.gap + " whiteFrac=" + r.verylowWhiteFrac.toFixed(2));
 WScript.Echo("  waterRatio=" + r.waterRatio + " step3Mode=" + r.step3DarkenerMode);
-// VG278 hue=22, dist=5 -> direct hit, baseL=52
-assert(r.primary.id === "VG278", "Primary should be VG278, got " + r.primary.id);
-assert(r.baseL === 52, "BaseL should be 52, got " + r.baseL);
-// wfForTarget = (62-52)/(97-52) = 10/45 = 0.22, adjustedBaseL = round(52*0.78 + 97*0.22) = 62
+// Low-sat selects VG227 (Yellow Ochre, sat=50) over VG278 (sat=88) for better desaturation
+assert(r.primary.id === "VG227", "Primary should be VG227 (muted pigment for low sat), got " + r.primary.id);
+// VG227 L=50, secondary VG409 L=22 -> weighted baseL depends on ratio
 assert(r.verylowWhiteFrac > 0 && r.verylowWhiteFrac < 0.7, "WhiteFrac should be reduced (not full 0.7), got " + r.verylowWhiteFrac.toFixed(2));
-assert(r.adjustedBaseL <= 63, "AdjustedBaseL should match target (~62), got " + r.adjustedBaseL);
-assert(r.gap >= -1 && r.gap <= 0, "Gap should be ~0 (white precisely matched), got " + r.gap);
+assert(r.adjustedBaseL >= 58 && r.adjustedBaseL <= 65, "AdjustedBaseL should be near target (~62), got " + r.adjustedBaseL);
+assert(r.gap >= -3 && r.gap <= 3, "Gap should be small (white handles most lightness), got " + r.gap);
 assert(r.waterRatio === "1:0.5", "Water should be 1:0.5, got " + r.waterRatio);
-// Key fix: NO darkener at all — white is precisely dosed
 assert(r.step3DarkenerMode === "hue-aware", "Should stay hue-aware (no darkener override), got " + r.step3DarkenerMode);
-// Summary should have some white (whiteFrac ~0.44 > 0)
 assert(r.summaryHasWhite, "Should have white in summary (reduced amount)");
 
 // ===================== HSL<->RGB UNIT TESTS =====================
@@ -1044,6 +1097,442 @@ for (var hue = 0; hue < 360; hue += 30) {
     }
 }
 assert(sweepOk, "All 12 hue steps should be within 45deg of target");
+
+// ===================== DISPLAY-SIMULATION CONSISTENCY TESTS =====================
+// Verify that analyzeRecipe flags (what the UI SHOWS) match what
+// computeMixedColor actually SIMULATES. Catches display/simulation drift.
+
+WScript.Echo("");
+WScript.Echo("=== Display-Simulation Consistency Tests ===");
+WScript.Echo("");
+
+// Helper: check if computeMixedColor uses a specific pigment HSL in its pigment list
+function simHasPigment(mixResult, pigmentHue, pigmentSat, pigmentLight) {
+    var ref = hslToRgb(pigmentHue, pigmentSat, pigmentLight);
+    for (var i = 0; i < mixResult.pigments.length; i++) {
+        var p = mixResult.pigments[i];
+        if (p.rgb.r === ref.r && p.rgb.g === ref.g && p.rgb.b === ref.b && p.teile > 0) return true;
+    }
+    return false;
+}
+
+// --- CS1: summaryHasComplement flag matches simulation ---
+// If analyzeRecipe says complement is in summary, computeMixedColor must use it.
+// If it says no complement, simulation must NOT use it (except darkener path tiny amounts).
+WScript.Echo("CS1: summaryHasComplement stimmt mit Simulation ueberein");
+var cs1Fail = false;
+var cs1Cases = [
+    // s<20 cases (the bug we just fixed)
+    [27,15,62], [30,15,60], [60,10,65], [120,15,50], [200,12,55], [300,8,45], [350,18,70],
+    [240,15,20], [33,15,80],
+    // s>=20 && s<80 cases
+    [120,60,40], [0,40,50], [210,70,40], [60,40,60],
+    // s>=80 cases (no complement)
+    [22,85,52], [0,90,30], [160,80,85],
+    // neutral (no complement)
+    [0,0,50], [200,5,50]
+];
+for (var i = 0; i < cs1Cases.length; i++) {
+    var c = cs1Cases[i];
+    var rec = analyzeRecipe(c[0], c[1], c[2]);
+    var mix = computeMixedColor(c[0], c[1], c[2]);
+    var simHasComp = simHasPigment(mix, rec.complement.hue, rec.complement.sat, rec.complement.light);
+
+    // Skip darkener-plus-black path (complement is optional/tiny there)
+    if (rec.step3DarkenerMode.indexOf("darkener-plus-black") === 0) continue;
+    if (rec.step3DarkenerMode === "primary-plus-black") continue;
+
+    if (rec.summaryHasComplement && !simHasComp) {
+        WScript.Echo("  FAIL: HSL(" + c[0] + "," + c[1] + "," + c[2] +
+            ") recipe says complement, but simulation doesn't use it");
+        cs1Fail = true;
+    }
+    if (!rec.summaryHasComplement && simHasComp && !rec.isNeutral) {
+        WScript.Echo("  FAIL: HSL(" + c[0] + "," + c[1] + "," + c[2] +
+            ") recipe says NO complement, but simulation uses it");
+        cs1Fail = true;
+    }
+}
+assert(!cs1Fail, "CS1: Complement display/simulation mismatch");
+
+// --- CS2: summaryHasWhite flag matches simulation ---
+WScript.Echo("CS2: summaryHasWhite stimmt mit Simulation ueberein");
+var cs2Fail = false;
+var cs2Cases = [
+    // s<20 with white
+    [27,15,62], [33,15,80], [27,15,75],
+    // s<20 without white (dark target)
+    [240,15,20], [30,15,40],
+    // s>=20 && s<50 with white
+    [60,40,60], [120,30,50],
+    // s>=50 no white
+    [22,85,52], [210,70,40]
+];
+for (var i = 0; i < cs2Cases.length; i++) {
+    var c = cs2Cases[i];
+    var rec = analyzeRecipe(c[0], c[1], c[2]);
+    var mix = computeMixedColor(c[0], c[1], c[2]);
+    var simHasWh = simHasPigment(mix, rec.white.hue, rec.white.sat, rec.white.light);
+
+    if (rec.step3DarkenerMode.indexOf("darkener-plus-black") === 0) continue;
+    if (rec.step3DarkenerMode === "primary-plus-black") continue;
+
+    if (rec.summaryHasWhite && !simHasWh) {
+        WScript.Echo("  FAIL: HSL(" + c[0] + "," + c[1] + "," + c[2] +
+            ") recipe says white, but simulation doesn't use it");
+        cs2Fail = true;
+    }
+    if (!rec.summaryHasWhite && simHasWh && !rec.isNeutral) {
+        WScript.Echo("  FAIL: HSL(" + c[0] + "," + c[1] + "," + c[2] +
+            ") recipe says NO white, but simulation uses it");
+        cs2Fail = true;
+    }
+}
+assert(!cs2Fail, "CS2: White display/simulation mismatch");
+
+// --- CS3: waterRatio consistency ---
+// The water ratio from analyzeRecipe must match what computeMixedColor uses.
+WScript.Echo("CS3: waterRatio stimmt ueberein");
+var cs3Fail = false;
+for (var h = 0; h < 360; h += 30) {
+    for (var sat = 15; sat <= 85; sat += 35) {
+        for (var ll = 15; ll <= 85; ll += 14) {
+            var rec3 = analyzeRecipe(h, sat, ll);
+            var mix3 = computeMixedColor(h, sat, ll);
+            if (rec3.waterRatio !== mix3.waterRatio) {
+                WScript.Echo("  FAIL: HSL(" + h + "," + sat + "," + ll +
+                    ") recipe water=" + rec3.waterRatio + " but sim water=" + mix3.waterRatio);
+                cs3Fail = true;
+            }
+        }
+    }
+}
+assert(!cs3Fail, "CS3: Water ratio recipe/simulation mismatch");
+
+// --- CS4: Broad sweep complement/white consistency ---
+// Full grid: every 45° hue, 3 sat levels, 5 light levels
+WScript.Echo("CS4: Breiter Sweep - Komplement/Weiss-Konsistenz (H x S x L)");
+var cs4Fail = false;
+var cs4Count = 0;
+for (var h = 0; h < 360; h += 45) {
+    for (var sat = 10; sat <= 85; sat += 25) {
+        for (var ll = 20; ll <= 80; ll += 15) {
+            var rec4 = analyzeRecipe(h, sat, ll);
+            var mix4 = computeMixedColor(h, sat, ll);
+            cs4Count++;
+
+            // Skip dark shortcut paths
+            if (rec4.step3DarkenerMode.indexOf("darkener-plus-black") === 0) continue;
+            if (rec4.step3DarkenerMode === "primary-plus-black") continue;
+            if (rec4.isNeutral) continue;
+
+            var simComp = simHasPigment(mix4, rec4.complement.hue, rec4.complement.sat, rec4.complement.light);
+            var simWhite = simHasPigment(mix4, rec4.white.hue, rec4.white.sat, rec4.white.light);
+
+            if (rec4.summaryHasComplement && !simComp) {
+                WScript.Echo("  FAIL: HSL(" + h + "," + sat + "," + ll +
+                    ") recipe=complement, sim=none");
+                cs4Fail = true;
+            }
+            if (!rec4.summaryHasComplement && simComp) {
+                WScript.Echo("  FAIL: HSL(" + h + "," + sat + "," + ll +
+                    ") recipe=no-complement, sim=complement");
+                cs4Fail = true;
+            }
+            if (rec4.summaryHasWhite && !simWhite) {
+                WScript.Echo("  FAIL: HSL(" + h + "," + sat + "," + ll +
+                    ") recipe=white, sim=none");
+                cs4Fail = true;
+            }
+            if (!rec4.summaryHasWhite && simWhite) {
+                WScript.Echo("  FAIL: HSL(" + h + "," + sat + "," + ll +
+                    ") recipe=no-white, sim=white");
+                cs4Fail = true;
+            }
+        }
+    }
+}
+WScript.Echo("  " + cs4Count + " Kombinationen geprueft");
+assert(!cs4Fail, "CS4: Broad sweep display/simulation mismatch");
+
+// ===================== DOMAIN LOGIC TESTS =====================
+// These tests verify WATERCOLOR PAINTING INVARIANTS, not algorithm internals.
+// Expected values are derived from painting knowledge, not from the code.
+
+WScript.Echo("");
+WScript.Echo("=== Domain Logic Tests (Fachlogik) ===");
+WScript.Echo("");
+
+// --- DL1: No white+darkener contradiction ---
+// If white is added for desaturation, the recipe should NOT need a darkener
+// to compensate. White and darkener fighting each other = muddy result.
+WScript.Echo("DL1: Kein Weiss+Darkener-Widerspruch (Sweep s<20, diverse L)");
+var dl1Fail = false;
+var dl1Cases = [
+    [27,15,62], [27,15,50], [27,15,40], [27,15,75], [27,15,85],
+    [200,10,30], [200,10,50], [200,10,70], [200,10,85],
+    [120,5,45], [120,15,55], [120,10,65],
+    [340,12,35], [340,12,60], [340,12,80],
+    [60,8,50], [60,18,40], [60,18,70]
+];
+for (var i = 0; i < dl1Cases.length; i++) {
+    var c = dl1Cases[i];
+    var rec = analyzeRecipe(c[0], c[1], c[2]);
+    // If white was added (verylowWhiteFrac > 0), gap should be >= -5 (no darkener)
+    if (rec.verylowWhiteFrac > 0 && rec.gap < -5) {
+        WScript.Echo("  FAIL: HSL(" + c[0] + "," + c[1] + "," + c[2] +
+            ") whiteFrac=" + rec.verylowWhiteFrac.toFixed(2) +
+            " but gap=" + rec.gap + " -> darkener needed! Contradiction.");
+        dl1Fail = true;
+    }
+}
+assert(!dl1Fail, "DL1: White+Darkener contradiction found");
+
+// --- DL2: Hue preservation across full spectrum ---
+// The mixed color's hue should be within 40° of the target for all chromatic colors.
+WScript.Echo("DL2: Hue-Erhaltung ueber volles Spektrum (10° Schritte, s=70, l=50)");
+var dl2Fail = false;
+for (var h = 0; h < 360; h += 10) {
+    var mx = computeMixedColor(h, 70, 50);
+    var hd = hueDistance(h, mx.h);
+    if (hd > 40) {
+        WScript.Echo("  FAIL: hue " + h + " -> mixed " + mx.h + " (dist " + hd + ")");
+        dl2Fail = true;
+    }
+}
+assert(!dl2Fail, "DL2: Hue deviation > 40deg found");
+
+// --- DL3: Light targets should use water, not be pur ---
+// If target L >= 75, the water ratio should never be "pur" for chromatic colors.
+WScript.Echo("DL3: Helle Farben (L>=75) brauchen Wasser, nie pur");
+var dl3Fail = false;
+var dl3Hues = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
+for (var i = 0; i < dl3Hues.length; i++) {
+    for (var sat = 20; sat <= 80; sat += 20) {
+        var rec3 = analyzeRecipe(dl3Hues[i], sat, 80);
+        if (rec3.waterRatio === "pur") {
+            WScript.Echo("  FAIL: HSL(" + dl3Hues[i] + "," + sat + ",80) -> pur! Should use water.");
+            dl3Fail = true;
+        }
+    }
+}
+assert(!dl3Fail, "DL3: Light color with pur water ratio found");
+
+// --- DL4: Dark targets (L<=20) should NOT use heavy water dilution ---
+// Dark colors need concentrated pigment, not dilution.
+WScript.Echo("DL4: Dunkle Farben (L<=20) brauchen konzentriertes Pigment");
+var dl4Fail = false;
+for (var i = 0; i < dl3Hues.length; i++) {
+    for (var sat = 30; sat <= 80; sat += 25) {
+        var rec4 = analyzeRecipe(dl3Hues[i], sat, 15);
+        var wn = parseWaterRatio(rec4.waterRatio);
+        if (wn >= 3) {
+            WScript.Echo("  FAIL: HSL(" + dl3Hues[i] + "," + sat + ",15) -> water " + rec4.waterRatio + "! Too diluted for dark target.");
+            dl4Fail = true;
+        }
+    }
+}
+assert(!dl4Fail, "DL4: Dark color with excessive water found");
+
+// --- DL5: Primary pigment should be hue-near ---
+// For any chromatic color, the primary pigment should be within 30° of the target hue.
+WScript.Echo("DL5: Primary-Pigment muss hue-nah sein (max 30°)");
+var dl5Fail = false;
+for (var h = 0; h < 360; h += 15) {
+    var rec5 = analyzeRecipe(h, 60, 50);
+    if (rec5.primary.dist > 30) {
+        WScript.Echo("  FAIL: hue " + h + " -> primary " + rec5.primary.id +
+            " (hue " + rec5.primary.hue + ", dist " + rec5.primary.dist + ")");
+        dl5Fail = true;
+    }
+}
+assert(!dl5Fail, "DL5: Primary hue distance > 30deg found");
+
+// --- DL6: Saturation direction ---
+// Low saturation (s<20) should produce a mixed color with clearly lower saturation
+// than the raw pigment. Allow up to 2x target sat + 15 (palette has limited muted pigments).
+WScript.Echo("DL6: Niedrige Saettigung (s<20) ergibt entsaettigte Mischung");
+var dl6Fail = false;
+var dl6Cases = [[30,15,60],[60,10,65],[120,15,50],[200,12,55],[300,8,45],[350,18,70],[27,15,62]];
+for (var i = 0; i < dl6Cases.length; i++) {
+    var c = dl6Cases[i];
+    var mx6 = computeMixedColor(c[0], c[1], c[2]);
+    var maxSat = Math.min(50, c[1] * 2 + 15);
+    if (mx6.s > maxSat) {
+        WScript.Echo("  FAIL: HSL(" + c[0] + "," + c[1] + "," + c[2] +
+            ") -> mixed s=" + mx6.s + " (too saturated, max=" + maxSat + " for s=" + c[1] + " target)");
+        dl6Fail = true;
+    }
+}
+assert(!dl6Fail, "DL6: Low-sat target produced high-sat mix");
+
+// --- DL7: High saturation should stay vibrant ---
+// For s>=80, the mixed color should retain substantial saturation (>30 before dilution).
+WScript.Echo("DL7: Hohe Saettigung (s>=80) bleibt kraeftig");
+var dl7Fail = false;
+var dl7Cases = [[0,85,48],[22,88,52],[120,80,50],[240,85,38],[340,80,44]];
+for (var i = 0; i < dl7Cases.length; i++) {
+    var c = dl7Cases[i];
+    var rec7 = analyzeRecipe(c[0], c[1], c[2]);
+    // For high-sat, recipe should NOT add complement or white
+    if (rec7.summaryHasWhite) {
+        WScript.Echo("  FAIL: HSL(" + c[0] + "," + c[1] + "," + c[2] +
+            ") has white in summary — would kill saturation!");
+        dl7Fail = true;
+    }
+}
+assert(!dl7Fail, "DL7: High-sat recipe contains white");
+
+// --- DL8: Neutral colors should have very low mixed saturation ---
+// s < 10 targets should produce mixed sat < 10.
+WScript.Echo("DL8: Neutrale Farben bleiben neutral (mixed s < 10)");
+var dl8Fail = false;
+var dl8Cases = [[0,0,50],[0,0,20],[0,0,80],[0,0,95],[180,5,50],[90,3,40]];
+for (var i = 0; i < dl8Cases.length; i++) {
+    var c = dl8Cases[i];
+    var mx8 = computeMixedColor(c[0], c[1], c[2]);
+    if (mx8.s > 10) {
+        WScript.Echo("  FAIL: HSL(" + c[0] + "," + c[1] + "," + c[2] +
+            ") -> mixed s=" + mx8.s + " (too chromatic for neutral target)");
+        dl8Fail = true;
+    }
+}
+assert(!dl8Fail, "DL8: Neutral target too chromatic");
+
+// --- DL9: Water ratio monotonicity with lightness ---
+// For same hue/sat, increasing target L should never decrease water ratio.
+// (lighter = more water, not less)
+WScript.Echo("DL9: Mehr Helligkeit -> gleich viel oder mehr Wasser");
+var dl9Fail = false;
+var dl9Hues = [22, 120, 240, 340];
+for (var hi = 0; hi < dl9Hues.length; hi++) {
+    var prevWater = -1;
+    for (var ll = 20; ll <= 90; ll += 10) {
+        var rec9 = analyzeRecipe(dl9Hues[hi], 60, ll);
+        var wn9 = parseWaterRatio(rec9.waterRatio);
+        if (wn9 < prevWater - 0.01) {
+            WScript.Echo("  FAIL: hue=" + dl9Hues[hi] + " L=" + ll + " water=" + rec9.waterRatio +
+                " (" + wn9 + ") < previous (" + prevWater + ")");
+            dl9Fail = true;
+        }
+        prevWater = wn9;
+    }
+}
+assert(!dl9Fail, "DL9: Water ratio decreased with increasing lightness");
+
+// --- DL10: Mixed lightness direction ---
+// The mixed color L should move in the right direction relative to pigment base L.
+// Very light targets (L>=80) should produce mixed L >= 65.
+// Very dark targets (L<=15) should produce mixed L <= 35.
+WScript.Echo("DL10: Helligkeit der Mischung geht in die richtige Richtung");
+var dl10Fail = false;
+for (var h = 0; h < 360; h += 45) {
+    // Light target
+    var mxL = computeMixedColor(h, 60, 85);
+    if (mxL.l < 65) {
+        WScript.Echo("  FAIL: HSL(" + h + ",60,85) -> mixed L=" + mxL.l + " (should be >= 65)");
+        dl10Fail = true;
+    }
+    // Dark target (only for sat >= 30 to avoid neutral path)
+    var mxD = computeMixedColor(h, 60, 15);
+    if (mxD.l > 35) {
+        WScript.Echo("  FAIL: HSL(" + h + ",60,15) -> mixed L=" + mxD.l + " (should be <= 35)");
+        dl10Fail = true;
+    }
+}
+assert(!dl10Fail, "DL10: Mixed lightness in wrong direction");
+
+// --- DL11: Recipe total Teile should be reasonable ---
+// A recipe shouldn't need more than ~25 total parts. More = impractical.
+WScript.Echo("DL11: Gesamtmenge Teile bleibt praxistauglich (max 25)");
+var dl11Fail = false;
+for (var h = 0; h < 360; h += 30) {
+    for (var sat = 15; sat <= 85; sat += 35) {
+        for (var ll = 20; ll <= 80; ll += 30) {
+            var mx11 = computeMixedColor(h, sat, ll);
+            var totalT = 0;
+            for (var p = 0; p < mx11.pigments.length; p++) totalT += mx11.pigments[p].teile;
+            if (totalT > 25) {
+                WScript.Echo("  FAIL: HSL(" + h + "," + sat + "," + ll +
+                    ") -> " + totalT.toFixed(1) + " Teile total (too many!)");
+                dl11Fail = true;
+            }
+        }
+    }
+}
+assert(!dl11Fail, "DL11: Excessive total Teile found");
+
+// --- DL12: Full grid sanity (coarse) ---
+// Run every 30° hue, 3 sat levels, 5 light levels and check basic sanity:
+// mixed hue within 50°, mixed L within 35 of target.
+WScript.Echo("DL12: Grobrasterpruefung (H x S x L) - Grundsanity");
+var dl12Fail = false;
+var dl12Count = 0;
+for (var h = 0; h < 360; h += 30) {
+    for (var sat = 15; sat <= 85; sat += 35) {
+        for (var ll = 15; ll <= 85; ll += 14) {
+            var mx12 = computeMixedColor(h, sat, ll);
+            dl12Count++;
+            if (sat >= 10) {
+                var hd12 = hueDistance(h, mx12.h);
+                if (hd12 > 50 && mx12.s > 5) {
+                    WScript.Echo("  FAIL: HSL(" + h + "," + sat + "," + ll +
+                        ") -> hue " + mx12.h + " (dist " + hd12 + ")");
+                    dl12Fail = true;
+                }
+            }
+            if (Math.abs(ll - mx12.l) > 35) {
+                WScript.Echo("  FAIL: HSL(" + h + "," + sat + "," + ll +
+                    ") -> L=" + mx12.l + " (diff " + Math.abs(ll - mx12.l) + ")");
+                dl12Fail = true;
+            }
+        }
+    }
+}
+WScript.Echo("  " + dl12Count + " Kombinationen geprueft");
+assert(!dl12Fail, "DL12: Grid sanity check failed");
+
+// --- DL13: Rezept-Ergebnis vs. Zielfarbe ---
+// computeMixedColor simuliert das ANGEZEIGTE Rezept (exakte Pigmente + Mengen + Wasser).
+// Das Ergebnis muss nah an der Zielfarbe liegen.
+// Toleranzen: dH<=20, dS<=20, dL<=20 (fuer niedrige Saettigung ist Hue instabil)
+WScript.Echo("DL13: Rezept-Ergebnis vs. Zielfarbe (angezeigte Mischung)");
+var dl13Fail = false;
+var dl13Count = 0;
+var maxHueTol = 20;
+var maxSatTol = 20;
+var maxLightTol = 20;
+for (var h13 = 0; h13 < 360; h13 += 30) {
+    for (var s13 = 15; s13 <= 85; s13 += 35) {
+        for (var l13 = 20; l13 <= 80; l13 += 15) {
+            var rec13 = analyzeRecipe(h13, s13, l13);
+            if (rec13.isNeutral) continue;
+            if (rec13.step3DarkenerMode.indexOf("darkener-plus-black") === 0) continue;
+            if (rec13.step3DarkenerMode === "primary-plus-black") continue;
+
+            var mx13 = computeMixedColor(h13, s13, l13);
+            dl13Count++;
+
+            var hd13 = hueDistance(h13, mx13.h);
+            var sd13 = Math.abs(s13 - mx13.s);
+            var ld13 = Math.abs(l13 - mx13.l);
+
+            // Hue: skip check when both target and result have very low saturation
+            var hueOk = (s13 < 15 && mx13.s < 15) ? true : (hd13 <= maxHueTol);
+            var satOk = sd13 <= maxSatTol;
+            var lightOk = ld13 <= maxLightTol;
+
+            if (!hueOk || !satOk || !lightOk) {
+                WScript.Echo("  FAIL: HSL(" + h13 + "," + s13 + "," + l13 +
+                    ") -> HSL(" + mx13.h + "," + mx13.s + "," + mx13.l +
+                    ") dH=" + hd13 + " dS=" + sd13 + " dL=" + ld13);
+                dl13Fail = true;
+            }
+        }
+    }
+}
+WScript.Echo("  " + dl13Count + " Kombinationen geprueft");
+assert(!dl13Fail, "DL13: Angezeigtes Rezept produziert Farbe zu weit vom Ziel");
 
 // ===================== SUMMARY =====================
 WScript.Echo("");

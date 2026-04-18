@@ -465,11 +465,22 @@ function hexToHsl(hex) {
     return { h: Math.round(h), s: Math.round(s * 100), l: Math.round(l * 100) };
 }
 
-function findNearestPigments(targetHue, targetLight) {
+function findNearestPigments(targetHue, targetLight, targetSat) {
     const chromatic = PALETTE.filter(p => p.sat > 0 && p.light > 10 && p.light < 90);
     let sorted = chromatic
         .map(p => ({ ...p, dist: hueDistance(targetHue, p.hue) }))
         .sort((a, b) => {
+            if (targetSat !== undefined && targetSat < 20) {
+                // Low saturation: still prioritize hue, but within similar hue (±10°)
+                // prefer muted pigments over vivid ones
+                const hueBand = 10;
+                if (Math.abs(a.dist - b.dist) <= hueBand) {
+                    const aScore = Math.abs(a.light - targetLight) + a.sat * 0.5;
+                    const bScore = Math.abs(b.light - targetLight) + b.sat * 0.5;
+                    return aScore - bScore;
+                }
+                return a.dist - b.dist;
+            }
             // Primary sort: hue distance
             // Within similar hue distance (±3°): balance lightness match and saturation
             if (Math.abs(a.dist - b.dist) <= 3) {
@@ -547,7 +558,7 @@ function generateRecipe(h, s, l) {
     document.getElementById('previewTarget').style.color = targetContrast;
     document.getElementById('previewTarget').textContent = `Ziel: HSL(${h}°, ${s}%, ${l}%)`;
 
-    const nearest = findNearestPigments(h, l);
+    const nearest = findNearestPigments(h, l, s);
     const complement = findComplement(h);
     const white = PALETTE.reduce((a, b) => a.light > b.light ? a : b);
     const black = PALETTE.reduce((a, b) => a.light < b.light ? a : b);
@@ -560,6 +571,12 @@ function generateRecipe(h, s, l) {
 
     // Compute primary/secondary pigments and ratios (used in steps 1 and 3)
     let primary = nearest[0];
+    // Hue-stability guard: prefer exact hue match (dist=0) over composite-score winner
+    // to prevent primary-flip causing non-monotonic water ratios across L values
+    if (!isNeutral && s >= 20 && primary.dist > 0) {
+        const exactMatch = nearest.find(p => p.dist === 0);
+        if (exactMatch) primary = exactMatch;
+    }
     let secondary = null;
     let primaryRatio = 100, secondaryRatio = 0;
 
@@ -595,6 +612,7 @@ function generateRecipe(h, s, l) {
     }
     let adjustedBaseL = baseL;
     let verylowWhiteFrac = 0;
+    let verylowTotalWhite = 0;
     if (!isNeutral) {
         if (s < 20) {
             // Cap white fraction so adjustedBaseL doesn't overshoot target L
@@ -603,6 +621,7 @@ function generateRecipe(h, s, l) {
             const wfForTarget = (l - baseL) / Math.max(1, white.light - baseL);
             verylowWhiteFrac = Math.min(maxWf, Math.max(0, wfForTarget));
             adjustedBaseL = Math.round(baseL * (1 - verylowWhiteFrac) + white.light * verylowWhiteFrac);
+            verylowTotalWhite = Math.round(verylowWhiteFrac * 10);
         } else if (s < 50) {
             const whiteFrac = (100 - s) * 0.0015;
             adjustedBaseL = Math.round(baseL * (1 - whiteFrac) + white.light * whiteFrac);
@@ -612,9 +631,12 @@ function generateRecipe(h, s, l) {
 
     // Determine if step 3 will override the base with darkener+black
     let step3Mode = 'normal';
-    if (!isNeutral && gap < -15) {
+    const darkenerHueDist = hueDistance(h, darkener.hue);
+    if (!isNeutral && (gap < -15 || (l < darkener.light - 3 && darkenerHueDist <= 30))) {
         if (l >= darkener.light) {
             step3Mode = 'normal';
+        } else if (darkenerHueDist > 45) {
+            step3Mode = 'primary-plus-black';
         } else if (l >= black.light) {
             step3Mode = 'darkener-plus-black';
         } else {
@@ -622,29 +644,41 @@ function generateRecipe(h, s, l) {
         }
     }
     const isDarkenerBase = step3Mode.startsWith('darkener-plus-black');
+    const isPrimaryPlusBlack = step3Mode === 'primary-plus-black';
 
     let recipe = [];
     let html = '';
 
-    // === DARK COLOR SHORTCUT: darkener-plus-black renders a compact recipe ===
-    if (isDarkenerBase) {
-        const darkenerIsPrimary = darkener.id === primary.id;
-        const hueDist = hueDistance(h, darkener.hue);
+    // === DARK COLOR SHORTCUT: darkener-plus-black or primary-plus-black renders compact recipe ===
+    if (isDarkenerBase || isPrimaryPlusBlack) {
+        const mainPigment = isPrimaryPlusBlack ? primary : darkener;
+        const mainPigmentIsPrimary = mainPigment.id === primary.id;
+        const hueDist = hueDistance(h, mainPigment.hue);
 
         html += `<div class="recipe-card">`;
         html += `<h2><span class="step-number">1</span> Mischrezept (sehr dunkel, L=${l}%)</h2>`;
 
         html += `<div class="info-text">
-            Zielfarbe ist <strong>sehr dunkel</strong> — verwende <strong>${darkener.name}</strong> (L=${darkener.light}%) als Hauptfarbe
+            Zielfarbe ist <strong>sehr dunkel</strong> — verwende <strong>${mainPigment.name}</strong> (L=${mainPigment.light}%) als Hauptfarbe
             und dunkle mit Schwarz ab:
         </div>`;
 
-        // Main pigment: darkener
-        html += renderPigmentRow(darkener, "10 Teile",
-            `Hauptfarbe (Hue ${darkener.hue}°, L=${darkener.light}%)`);
+        // Main pigment
+        html += renderPigmentRow(mainPigment, "10 Teile",
+            `Hauptfarbe (Hue ${mainPigment.hue}°, L=${mainPigment.light}%)`);
 
         // Black amount (capped at 10)
-        if (step3Mode === 'darkener-plus-black') {
+        if (step3Mode === 'primary-plus-black') {
+            const rawBlack = Math.round(10 * (baseL - l) / Math.max(1, l - black.light));
+            const dkBlack = Math.min(10, Math.max(1, rawBlack));
+            html += renderPigmentRow(black, `~${teileLabel(dkBlack)}`,
+                `Schwarz zum Abdunkeln auf L≈${l}%`);
+            if (rawBlack > 10) {
+                html += `<div class="info-text">
+                    Pur und deckend auftragen. Ggf. <strong>mehrere Schichten</strong> für die nötige Tiefe.
+                </div>`;
+            }
+        } else if (step3Mode === 'darkener-plus-black') {
             const rawBlack = Math.round(10 * (darkener.light - l) / Math.max(1, l - black.light));
             const dkBlack = Math.min(10, Math.max(1, rawBlack));
             html += renderPigmentRow(black, `~${teileLabel(dkBlack)}`,
@@ -663,8 +697,8 @@ function generateRecipe(h, s, l) {
             </div>`;
         }
 
-        // Optional hue correction (only if darkener hue is far from target)
-        if (!darkenerIsPrimary && hueDist > 5) {
+        // Optional hue correction (only if main pigment hue is far from target)
+        if (!mainPigmentIsPrimary && hueDist > 5) {
             html += renderPigmentRow(primary, "~1–2 Teile",
                 `Optional: Hue-Korrektur Richtung ${h}° (${primary.name} Hue ${primary.hue}°)`);
         }
@@ -702,9 +736,9 @@ function generateRecipe(h, s, l) {
         html += `<div class="recipe-card">`;
         html += `<h2><span class="step-number">✓</span> Zusammenfassung</h2>`;
         const summaryParts = [];
-        summaryParts.push(`<strong>${darkener.name}</strong> (${darkener.id}) — Hauptfarbe`);
+        summaryParts.push(`<strong>${mainPigment.name}</strong> (${mainPigment.id}) — Hauptfarbe`);
         summaryParts.push(`+ <strong>${black.name}</strong> (${black.id}) zum Abdunkeln`);
-        if (!darkenerIsPrimary && hueDist > 5)
+        if (!mainPigmentIsPrimary && hueDist > 5)
             summaryParts.push(`+ Spur <strong>${primary.name}</strong> (${primary.id}) für Hue-Korrektur`);
         html += `<div class="info-text" style="font-size:1em;line-height:1.8;">
             ${summaryParts.join('<br>')}
@@ -829,17 +863,35 @@ function generateRecipe(h, s, l) {
     } else {
         const wTeile = Math.round(verylowWhiteFrac * 10);
         const cTeile = 10 - wTeile;
-        if (wTeile === 0) {
+        const totalWhite = wTeile;
+        // Complement for desaturation (same logic as computeMixedColor)
+        const primarySatFactor = Math.max(1, primary.sat / 60);
+        let compDesat = Math.max(2, Math.round((20 - s) * 0.4 * primarySatFactor));
+        if (totalWhite === 0) compDesat++;
+        compDesat = Math.min(5, compDesat);
+        if (totalWhite === 0) {
             html += `<div class="info-text">
-                <strong>Stark entsättigt (${s}%)</strong> — Farbe stark mit Wasser verdünnen.
-                Wasserverdünnung entsättigt und hellt gleichzeitig auf.
+                <strong>Stark entsättigt (${s}%)</strong> — Komplementärfarbe zum Entsättigen, kaum verdünnen:
             </div>`;
+            html += renderPigmentRow(complement, "~" + teileLabel(compDesat),
+                `Komplementär (Hue ${complement.hue}°) zum Entsättigen`);
         } else {
             html += `<div class="info-text">
-                <strong>Stark entsättigt (${s}%)</strong> — Weiß für gedeckten Pastellton:
+                <strong>Stark entsättigt (${s}%)</strong> — Weiß und Komplementärfarbe für gedeckten Pastellton:
             </div>`;
-            html += renderPigmentRow(white, "~" + teileLabel(wTeile), `Weiß für Entsättigung`);
-            html += renderPigmentRow(primary, "~" + teileLabel(cTeile), `Grundfarbe`);
+            html += renderPigmentRow(white, "~" + teileLabel(totalWhite), `Weiß für Entsättigung + Aufhellung`);
+            html += renderPigmentRow(complement, "~" + teileLabel(compDesat),
+                `Komplementär (Hue ${complement.hue}°) zum Entsättigen`);
+            if (secondary && secondaryRatio > 0) {
+                const pDisp = Math.round(cTeile * primaryRatio / 100);
+                const sDisp = cTeile - pDisp;
+                html += renderPigmentRow(primary, "~" + teileLabel(pDisp), `Grundfarbe`);
+                if (sDisp > 0) {
+                    html += renderPigmentRow(secondary, "~" + teileLabel(sDisp), `Sekundärfarbe`);
+                }
+            } else {
+                html += renderPigmentRow(primary, "~" + teileLabel(cTeile), `Grundfarbe`);
+            }
         }
     }
 
@@ -920,7 +972,8 @@ function generateRecipe(h, s, l) {
             waterText = "Pur auftragen + abdunkeln.";
             // Normal darkening: hue-aware darkener can reach target
             // (darkener-plus-black cases handled by early return above)
-            const dkTeile = Math.max(1, Math.round(10 * (adjustedBaseL - l) / Math.max(1, l - darkener.light)));
+            const dkSpan = Math.max(1, adjustedBaseL - darkener.light);
+            const dkTeile = Math.min(10, Math.max(1, Math.round(10 * (adjustedBaseL - l) / dkSpan)));
             html += renderPigmentRow(darkener, `~${teileLabel(dkTeile)}`,
                 `Zum Abdunkeln (hue-nah, auf 10 Teile Grundfarbe)`);
             if (complement.id !== darkener.id && dkTeile <= 3) {
@@ -966,11 +1019,13 @@ function generateRecipe(h, s, l) {
     } else {
         // Normal chromatic path (darkener-plus-black handled by early return)
         summaryParts.push(`<strong>${primary.name}</strong> (${primary.id})`);
-        if (s >= 20 && s < 80)
+        if (s < 20)
+            summaryParts.push(`+ Spur <strong>${complement.name}</strong> (${complement.id}) zum Entsättigen`);
+        else if (s >= 20 && s < 80)
             summaryParts.push(`+ Spur <strong>${complement.name}</strong> (${complement.id})`);
         if (s >= 20 && s < 50)
             summaryParts.push(`+ <strong>${white.name}</strong> (${white.id})`);
-        else if (s < 20 && verylowWhiteFrac > 0)
+        else if (s < 20 && verylowTotalWhite > 0)
             summaryParts.push(`+ <strong>${white.name}</strong> (${white.id})`);
     }
 
