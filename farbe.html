@@ -597,10 +597,10 @@ function generateRecipe(h, s, l) {
     let verylowWhiteFrac = 0;
     if (!isNeutral) {
         if (s < 20) {
-            // Cap white fraction so adjustedBaseL doesn't overshoot target L by more than 10
+            // Cap white fraction so adjustedBaseL doesn't overshoot target L
             // Prevents: adding tons of white then needing darkener to compensate
             const maxWf = 0.7;
-            const wfForTarget = (l + 10 - baseL) / Math.max(1, white.light - baseL);
+            const wfForTarget = (l - baseL) / Math.max(1, white.light - baseL);
             verylowWhiteFrac = Math.min(maxWf, Math.max(0, wfForTarget));
             adjustedBaseL = Math.round(baseL * (1 - verylowWhiteFrac) + white.light * verylowWhiteFrac);
         } else if (s < 50) {
@@ -1043,7 +1043,7 @@ renderPalette();
 </script>
 
 <footer style="max-width:700px;margin:30px auto 10px;text-align:center;color:#555;font-size:0.75em;">
-    Letzte Änderung: 2026-04-18
+    Letzte Änderung: 18.04.2026
 </footer>
 
 </body>

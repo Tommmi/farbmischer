@@ -185,7 +185,7 @@ function analyzeRecipe(h, s, l) {
     if (!isNeutral) {
         if (s < 20) {
             var maxWf = 0.7;
-            var wfForTarget = (l + 10 - baseL) / Math.max(1, white.light - baseL);
+            var wfForTarget = (l - baseL) / Math.max(1, white.light - baseL);
             verylowWhiteFrac = Math.min(maxWf, Math.max(0, wfForTarget));
             adjustedBaseL = Math.round(baseL * (1 - verylowWhiteFrac) + white.light * verylowWhiteFrac);
         } else if (s < 50) {
@@ -831,12 +831,12 @@ WScript.Echo("  waterRatio=" + r.waterRatio + " step3Mode=" + r.step3DarkenerMod
 // VG278 hue=22, dist=5 -> direct hit, baseL=52
 assert(r.primary.id === "VG278", "Primary should be VG278, got " + r.primary.id);
 assert(r.baseL === 52, "BaseL should be 52, got " + r.baseL);
-// wfForTarget = (62+10-52)/(97-52) = 20/45 = 0.44, adjustedBaseL = round(52*0.56 + 97*0.44) = 72
+// wfForTarget = (62-52)/(97-52) = 10/45 = 0.22, adjustedBaseL = round(52*0.78 + 97*0.22) = 62
 assert(r.verylowWhiteFrac > 0 && r.verylowWhiteFrac < 0.7, "WhiteFrac should be reduced (not full 0.7), got " + r.verylowWhiteFrac.toFixed(2));
-assert(r.adjustedBaseL <= 75, "AdjustedBaseL should be <= 75 (not 83 like before!), got " + r.adjustedBaseL);
-assert(r.gap >= -15, "Gap should be >= -15 (no darkener needed!), got " + r.gap);
+assert(r.adjustedBaseL <= 63, "AdjustedBaseL should match target (~62), got " + r.adjustedBaseL);
+assert(r.gap >= -1 && r.gap <= 0, "Gap should be ~0 (white precisely matched), got " + r.gap);
 assert(r.waterRatio === "1:0.5", "Water should be 1:0.5, got " + r.waterRatio);
-// Key fix: NO darkener-plus-black path, no pur
+// Key fix: NO darkener at all — white is precisely dosed
 assert(r.step3DarkenerMode === "hue-aware", "Should stay hue-aware (no darkener override), got " + r.step3DarkenerMode);
 // Summary should have some white (whiteFrac ~0.44 > 0)
 assert(r.summaryHasWhite, "Should have white in summary (reduced amount)");
