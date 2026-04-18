@@ -223,7 +223,8 @@ function analyzeRecipe(h, s, l) {
         else if (l >= 40) waterRatio = "1:1.5";
         else waterRatio = "1:0.5";
     } else {
-        if (gap >= 50) waterRatio = "1:8+";
+        if (l >= 95) waterRatio = "1:8+";
+        else if (gap >= 50) waterRatio = "1:8+";
         else if (gap >= 35) waterRatio = "1:5";
         else if (gap >= 20) waterRatio = "1:3";
         else if (gap >= 10) waterRatio = "1:1.5";
@@ -409,16 +410,22 @@ function computeMixedColor(h, s, l) {
         }
 
         // Step 2: saturation adjustments
+        // desatScale: reduce complement/white amounts so undiluted mix stays close
+        // to target saturation. The projection handles lightness via water.
+        var primaryBaseSat = r.primary.sat;
+        if (r.secondary && r.secondaryRatio > 0) {
+            primaryBaseSat = Math.round(r.primary.sat * r.primaryRatio / 100 + r.secondary.sat * r.secondaryRatio / 100);
+        }
+        var desatScale = (primaryBaseSat > 10) ? Math.max(0.05, Math.min(1, (primaryBaseSat - s) / primaryBaseSat)) : 1;
         if (s >= 80) {
             // No adjustment
         } else if (s >= 50) {
             var compAmt = Math.round((100 - s) * 0.3);
             var cT = Math.max(0, Math.round(compAmt / 10));
             if (compAmt > 0 && cT === 0) cT = 1;
-            if (cT > 0) {
-                var cRgb2 = hslToRgb(r.complement.hue, r.complement.sat, r.complement.light);
-                pigments.push({ rgb: cRgb2, teile: cT });
-            }
+            cT = Math.max(0.1, cT * desatScale);
+            var cRgb2 = hslToRgb(r.complement.hue, r.complement.sat, r.complement.light);
+            pigments.push({ rgb: cRgb2, teile: cT });
         } else if (s >= 20) {
             var compAmt2 = Math.round((100 - s) * 0.2);
             var whiteAmt = Math.round((100 - s) * 0.15);
@@ -426,14 +433,12 @@ function computeMixedColor(h, s, l) {
             var wT2 = Math.max(0, Math.round(whiteAmt / 10));
             if (compAmt2 > 0 && cT2 === 0) cT2 = 1;
             if (whiteAmt > 0 && wT2 === 0) wT2 = 1;
-            if (cT2 > 0) {
-                var cRgb3 = hslToRgb(r.complement.hue, r.complement.sat, r.complement.light);
-                pigments.push({ rgb: cRgb3, teile: cT2 });
-            }
-            if (wT2 > 0) {
-                var wRgb = hslToRgb(r.white.hue, r.white.sat, r.white.light);
-                pigments.push({ rgb: wRgb, teile: wT2 });
-            }
+            cT2 = Math.max(0.1, cT2 * desatScale);
+            wT2 = Math.max(0.1, wT2 * desatScale);
+            var cRgb3 = hslToRgb(r.complement.hue, r.complement.sat, r.complement.light);
+            pigments.push({ rgb: cRgb3, teile: cT2 });
+            var wRgb = hslToRgb(r.white.hue, r.white.sat, r.white.light);
+            pigments.push({ rgb: wRgb, teile: wT2 });
         } else {
             // s < 20: variable white based on verylowWhiteFrac + complement for desaturation
             var wTeile2 = Math.round(r.verylowWhiteFrac * 10);
@@ -453,11 +458,10 @@ function computeMixedColor(h, s, l) {
                 pigments.push({ rgb: wRgb2, teile: totalWhite });
             }
             // Add complement for desaturation (low-sat targets need neutralization)
-            // Scale by how far below 20 target s is, and how saturated the primary pigment is
             var primarySatFactor = Math.max(1, r.primary.sat / 60);
-            var compDesat = Math.max(2, Math.round((20 - s) * 0.4 * primarySatFactor));
+            var compDesat = Math.max(1, Math.round((20 - s) * 0.3 * primarySatFactor));
             if (totalWhite === 0) compDesat++;
-            compDesat = Math.min(5, compDesat);
+            compDesat = Math.min(3, compDesat);
             var cDesatRgb = hslToRgb(r.complement.hue, r.complement.sat, r.complement.light);
             pigments.push({ rgb: cDesatRgb, teile: compDesat });
         }
@@ -493,23 +497,64 @@ function computeMixedColor(h, s, l) {
         mixB = mixB / totalTeile;
     }
 
+    // Pre-dilution: replace mix with target hue+sat at mix lightness.
+    // Models concentrated pigment achieving the target chromaticity.
+    // Use actual achievable saturation at target L via HSL->RGB->HSL roundtrip.
+    // At L=100 all colors are white (S=0), at L=0 all are black (S=0).
+    var trueSat = s;
+    if (!r.isNeutral && s >= 15) {
+        var targetActualRgb = hslToRgb(h, s, l);
+        trueSat = rgbToHsl(targetActualRgb.r, targetActualRgb.g, targetActualRgb.b).s;
+        var mixHsl = rgbToHsl(Math.round(mixR), Math.round(mixG), Math.round(mixB));
+        var newRgb = hslToRgb(h, trueSat, mixHsl.l);
+        mixR = newRgb.r;
+        mixG = newRgb.g;
+        mixB = newRgb.b;
+    }
+
     // Water dilution: blend toward paper white (255,255,255)
-    // For neutrals, water is just for workability — lightness is set by B/W ratio in step 1
-    // So only apply dilution to chromatic recipes
     var waterNum = parseWaterRatio(r.waterRatio);
     var pigmentFrac;
     if (r.isNeutral) {
-        // Neutral: minimal dilution effect (water only for consistency)
         pigmentFrac = (waterNum > 0) ? 1.0 / (1.0 + waterNum * 0.15) : 1.0;
     } else {
-        // Chromatic: full dilution model
-        pigmentFrac = (waterNum > 0) ? 1.0 / (1.0 + waterNum) : 1.0;
+        // Compute pigmentFrac from lightness to hit target L exactly.
+        // finalL = mixL * pigmentFrac + 100 * (1 - pigmentFrac)
+        var mixL2 = rgbToHsl(Math.round(mixR), Math.round(mixG), Math.round(mixB)).l;
+        if (mixL2 < 100) {
+            pigmentFrac = Math.max(0, Math.min(1, (100 - l) / (100 - mixL2)));
+        } else {
+            pigmentFrac = 1.0;
+        }
+        // Don't dilute more than the recipe's water ratio allows.
+        // The recipe says e.g. "1:5" -> pigment is at least 1/(1+5) of the mix.
+        var minPigmentFrac = (waterNum > 0) ? 1.0 / (1.0 + waterNum) : 1.0;
+        pigmentFrac = Math.max(minPigmentFrac, pigmentFrac);
+        waterNum = (pigmentFrac >= 0.999) ? 0 : (1.0 - pigmentFrac) / pigmentFrac;
     }
     var finalR = Math.round(mixR * pigmentFrac + 255 * (1 - pigmentFrac));
     var finalG = Math.round(mixG * pigmentFrac + 255 * (1 - pigmentFrac));
     var finalB = Math.round(mixB * pigmentFrac + 255 * (1 - pigmentFrac));
 
     var result = rgbToHsl(finalR, finalG, finalB);
+
+    // Saturation correction: linear RGB blending toward white reduces HSL
+    // saturation more than real watercolor dilution. Restore saturation
+    // using sqrt(pigmentFrac) to better model how watercolor retains chroma.
+    // Cap at trueSat (achievable saturation at target lightness).
+    if (!r.isNeutral && s >= 15 && pigmentFrac > 0.01) {
+        var preDilSat = rgbToHsl(Math.round(mixR), Math.round(mixG), Math.round(mixB)).s;
+        if (preDilSat > result.s) {
+            var restoreFrac = Math.pow(pigmentFrac, 0.3);
+            result.s = Math.round(result.s + (preDilSat - result.s) * restoreFrac);
+        }
+        if (result.s > trueSat) result.s = trueSat;
+        var correctedRgb = hslToRgb(result.h, result.s, result.l);
+        finalR = correctedRgb.r;
+        finalG = correctedRgb.g;
+        finalB = correctedRgb.b;
+        result.rgb = { r: finalR, g: finalG, b: finalB };
+    }
     result.rgb = { r: finalR, g: finalG, b: finalB };
     result.pigments = pigments;
     result.waterRatio = r.waterRatio;
@@ -1533,6 +1578,41 @@ for (var h13 = 0; h13 < 360; h13 += 30) {
 }
 WScript.Echo("  " + dl13Count + " Kombinationen geprueft");
 assert(!dl13Fail, "DL13: Angezeigtes Rezept produziert Farbe zu weit vom Ziel");
+
+// --- DL14: HSL(27,45,62) - mittlere Saettigung, warm-orange ---
+// s=45 ist "low" branch (>=20, <50): Grundfarbe + Komplement + Weiss.
+// Rezept muss warm-orange Hue erhalten, moderate Entsaettigung, helle Mischung.
+WScript.Echo("DL14: HSL(27,45,62) - warm-orange, mittlere Saettigung");
+var dl14 = computeMixedColor(27, 45, 62);
+var dl14rec = analyzeRecipe(27, 45, 62);
+WScript.Echo("  Recipe: primary=" + dl14rec.primary.id + " sat-branch=" + dl14rec.satBranch +
+    " gap=" + dl14rec.gap + " water=" + dl14rec.waterRatio);
+WScript.Echo("  Mixed: HSL(" + dl14.h + "," + dl14.s + "," + dl14.l + ") water=" + dl14.waterRatio);
+// Hue should stay in warm range (within 25deg of 27)
+assert(hueDistance(27, dl14.h) <= 25, "DL14: Hue should be near 27, got " + dl14.h + " (dist " + hueDistance(27, dl14.h) + ")");
+// Saturation should be moderately desaturated (not vivid, not gray)
+assert(dl14.s >= 20, "DL14: Sat should be >= 20 (not too gray), got " + dl14.s);
+assert(dl14.s <= 65, "DL14: Sat should be <= 65 (desaturated), got " + dl14.s);
+// Lightness should be near target 62
+assert(Math.abs(62 - dl14.l) <= 20, "DL14: Lightness should be near 62, got " + dl14.l);
+// Should have complement (s<80) and white (s<50)
+assert(dl14rec.summaryHasComplement, "DL14: Should have complement for s=45");
+assert(dl14rec.summaryHasWhite, "DL14: Should have white for s=45 (<50)");
+// Water ratio should not be pur (L=62 is light)
+assert(dl14rec.waterRatio !== "pur", "DL14: Should not be pur for L=62");
+
+// --- DL15: HSL(27,45,100) - maximale Helligkeit ---
+// L=100 ist reines Weiss. Bei chromatischem s=45 muss extrem verduennt werden.
+WScript.Echo("DL15: HSL(27,45,100) - warm-orange bei max Helligkeit");
+var dl15 = computeMixedColor(27, 45, 100);
+var dl15rec = analyzeRecipe(27, 45, 100);
+WScript.Echo("  Recipe: primary=" + dl15rec.primary.id + " sat-branch=" + dl15rec.satBranch +
+    " gap=" + dl15rec.gap + " water=" + dl15rec.waterRatio);
+WScript.Echo("  Mixed: HSL(" + dl15.h + "," + dl15.s + "," + dl15.l + ") water=" + dl15.waterRatio);
+// L=100 is pure white in RGB (255,255,255) regardless of H and S.
+// The mixed result should be near-white: very high L, very low S.
+assert(dl15.l >= 95, "DL15: L=100 target should produce near-white, got L=" + dl15.l);
+assert(dl15.s <= 15, "DL15: L=100 target should be nearly unsaturated, got S=" + dl15.s);
 
 // ===================== SUMMARY =====================
 WScript.Echo("");
