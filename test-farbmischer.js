@@ -244,7 +244,11 @@ function analyzeRecipe(h, s, l) {
     var darkenerHueDist = hueDistance(h, darkener.hue);
     if (!isNeutral && (gap < -15 || (l < darkener.light - 3 && darkenerHueDist <= 30))) {
         if (l >= darkener.light) {
-            step3DarkenerMode = "hue-aware";
+            if (darkenerHueDist > 45) {
+                step3DarkenerMode = "no-darkener";
+            } else {
+                step3DarkenerMode = "hue-aware";
+            }
         } else if (darkenerHueDist > 45) {
             // Darkener too far in hue — use primary + black instead
             step3DarkenerMode = "primary-plus-black";
@@ -267,9 +271,12 @@ function analyzeRecipe(h, s, l) {
     var isDarkenerBase = step3DarkenerMode.indexOf("darkener-plus-black") === 0;
     var isPrimaryPlusBlack = step3DarkenerMode === "primary-plus-black";
     var summaryHasComplement = !isNeutral && s < 80;
+    var isNoDarkener = step3DarkenerMode === "no-darkener";
     if (isDarkenerBase || isPrimaryPlusBlack) {
         summaryHasWhite = false;
         waterRatio = "pur";
+    } else if (isNoDarkener) {
+        summaryHasWhite = false;
     }
     var summaryMainPigment = isDarkenerBase ? darkener : primary;
 
@@ -437,8 +444,12 @@ function computeMixedColor(h, s, l) {
             wT2 = Math.max(0.1, wT2 * desatScale);
             var cRgb3 = hslToRgb(r.complement.hue, r.complement.sat, r.complement.light);
             pigments.push({ rgb: cRgb3, teile: cT2 });
-            var wRgb = hslToRgb(r.white.hue, r.white.sat, r.white.light);
-            pigments.push({ rgb: wRgb, teile: wT2 });
+            if (!r.summaryHasWhite) {
+                // no-darkener mode: skip white to avoid white+black contradiction
+            } else {
+                var wRgb = hslToRgb(r.white.hue, r.white.sat, r.white.light);
+                pigments.push({ rgb: wRgb, teile: wT2 });
+            }
         } else {
             // s < 20: variable white based on verylowWhiteFrac + complement for desaturation
             var wTeile2 = Math.round(r.verylowWhiteFrac * 10);
@@ -472,6 +483,12 @@ function computeMixedColor(h, s, l) {
             var dkTeile = Math.min(10, Math.max(1, Math.round(10 * (r.adjustedBaseL - l) / span)));
             var dkRgb2 = hslToRgb(r.darkener.hue, r.darkener.sat, r.darkener.light);
             pigments.push({ rgb: dkRgb2, teile: dkTeile });
+        } else if (r.gap < -15 && r.step3DarkenerMode === "no-darkener") {
+            // Darkener hue too far — use black instead to darken without hue shift
+            var span2 = Math.max(1, r.adjustedBaseL - r.black.light);
+            var bkTeile = Math.min(10, Math.max(1, Math.round(10 * (r.adjustedBaseL - l) / span2)));
+            var bkRgb = hslToRgb(r.black.hue, r.black.sat, r.black.light);
+            pigments.push({ rgb: bkRgb, teile: bkTeile });
         } else if (r.gap >= -15 && r.gap < -5) {
             // Light darkener hint
             if (l > r.darkener.light) {
@@ -1048,7 +1065,7 @@ WScript.Echo("TEST 43: HSL(0,0,50) - neutral gray");
 var m43 = computeMixedColor(0, 0, 50);
 WScript.Echo("  Mixed: HSL(" + m43.h + "," + m43.s + "," + m43.l + ")");
 assert(m43.s <= 5, "Neutral gray should have very low saturation, got " + m43.s);
-assert(Math.abs(m43.l - 50) <= 15, "Neutral gray L should be near 50, got " + m43.l);
+assert(Math.abs(m43.l - 50) <= 12, "Neutral gray L should be near 50, got " + m43.l);
 
 // --- Test 44: Neutral white ---
 WScript.Echo("TEST 44: HSL(0,0,90) - light gray");
@@ -1594,25 +1611,52 @@ assert(hueDistance(27, dl14.h) <= 25, "DL14: Hue should be near 27, got " + dl14
 assert(dl14.s >= 20, "DL14: Sat should be >= 20 (not too gray), got " + dl14.s);
 assert(dl14.s <= 65, "DL14: Sat should be <= 65 (desaturated), got " + dl14.s);
 // Lightness should be near target 62
-assert(Math.abs(62 - dl14.l) <= 20, "DL14: Lightness should be near 62, got " + dl14.l);
+assert(Math.abs(62 - dl14.l) <= 10, "DL14: Lightness should be near 62, got " + dl14.l);
 // Should have complement (s<80) and white (s<50)
 assert(dl14rec.summaryHasComplement, "DL14: Should have complement for s=45");
 assert(dl14rec.summaryHasWhite, "DL14: Should have white for s=45 (<50)");
 // Water ratio should not be pur (L=62 is light)
 assert(dl14rec.waterRatio !== "pur", "DL14: Should not be pur for L=62");
 
-// --- DL15: HSL(27,45,100) - maximale Helligkeit ---
+// --- DL15: HSL(81,29,38) - dunkles Gelbgruen, Darkener hue-fern ---
+// Darkener VG409 (hue 25) hat hueDist=56 zu Ziel hue 81.
+// Burnt Umber als Abdunkler fuer Gelbgruen verfaelscht den Hue massiv.
+WScript.Echo("DL15: HSL(81,29,38) - dunkles Gelbgruen, Darkener-Hue-Problem");
+var dl15a = computeMixedColor(81, 29, 38);
+var dl15arec = analyzeRecipe(81, 29, 38);
+WScript.Echo("  Recipe: primary=" + dl15arec.primary.id + " darkener=" + dl15arec.darkener.id +
+    " darkenerHueDist=" + hueDistance(81, dl15arec.darkener.hue) +
+    " gap=" + dl15arec.gap + " step3Mode=" + dl15arec.step3DarkenerMode);
+WScript.Echo("  Mixed: HSL(" + dl15a.h + "," + dl15a.s + "," + dl15a.l + ")");
+// Hue should stay in yellow-green range (within 30deg of 81)
+assert(hueDistance(81, dl15a.h) <= 30, "DL15a: Hue should be near 81, got " + dl15a.h +
+    " (dist " + hueDistance(81, dl15a.h) + ") - Burnt Umber darkener shifts hue too far");
+// Saturation should be moderately desaturated
+assert(dl15a.s >= 10, "DL15a: Sat should be >= 10, got " + dl15a.s);
+assert(dl15a.s <= 50, "DL15a: Sat should be <= 50, got " + dl15a.s);
+// Lightness should be near target
+assert(Math.abs(38 - dl15a.l) <= 10, "DL15a: Lightness should be near 38, got " + dl15a.l);
+// Darkener must be hue-near (<=45deg) to avoid color contamination.
+// VG409 Burnt Umber (hue 25) has hueDist=56 to target hue 81 -- too far!
+// Either skip darkener or use primary+black instead.
+var dl15aDkDist = hueDistance(81, dl15arec.darkener.hue);
+if (dl15arec.gap < -5 && dl15arec.step3DarkenerMode === "hue-aware") {
+    assert(dl15aDkDist <= 45, "DL15a: Darkener hueDist should be <= 45 for hue-aware mode, got " +
+        dl15aDkDist + " (" + dl15arec.darkener.id + " hue=" + dl15arec.darkener.hue + ")");
+}
+
+// --- DL16: HSL(27,45,100) - maximale Helligkeit ---
 // L=100 ist reines Weiss. Bei chromatischem s=45 muss extrem verduennt werden.
-WScript.Echo("DL15: HSL(27,45,100) - warm-orange bei max Helligkeit");
-var dl15 = computeMixedColor(27, 45, 100);
-var dl15rec = analyzeRecipe(27, 45, 100);
-WScript.Echo("  Recipe: primary=" + dl15rec.primary.id + " sat-branch=" + dl15rec.satBranch +
-    " gap=" + dl15rec.gap + " water=" + dl15rec.waterRatio);
-WScript.Echo("  Mixed: HSL(" + dl15.h + "," + dl15.s + "," + dl15.l + ") water=" + dl15.waterRatio);
+WScript.Echo("DL16: HSL(27,45,100) - warm-orange bei max Helligkeit");
+var dl16 = computeMixedColor(27, 45, 100);
+var dl16rec = analyzeRecipe(27, 45, 100);
+WScript.Echo("  Recipe: primary=" + dl16rec.primary.id + " sat-branch=" + dl16rec.satBranch +
+    " gap=" + dl16rec.gap + " water=" + dl16rec.waterRatio);
+WScript.Echo("  Mixed: HSL(" + dl16.h + "," + dl16.s + "," + dl16.l + ") water=" + dl16.waterRatio);
 // L=100 is pure white in RGB (255,255,255) regardless of H and S.
 // The mixed result should be near-white: very high L, very low S.
-assert(dl15.l >= 95, "DL15: L=100 target should produce near-white, got L=" + dl15.l);
-assert(dl15.s <= 15, "DL15: L=100 target should be nearly unsaturated, got S=" + dl15.s);
+assert(dl16.l >= 95, "DL16: L=100 target should produce near-white, got L=" + dl16.l);
+assert(dl16.s <= 15, "DL16: L=100 target should be nearly unsaturated, got S=" + dl16.s);
 
 // ===================== SUMMARY =====================
 WScript.Echo("");

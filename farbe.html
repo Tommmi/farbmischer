@@ -634,7 +634,7 @@ function generateRecipe(h, s, l) {
     const darkenerHueDist = hueDistance(h, darkener.hue);
     if (!isNeutral && (gap < -15 || (l < darkener.light - 3 && darkenerHueDist <= 30))) {
         if (l >= darkener.light) {
-            step3Mode = 'normal';
+            step3Mode = darkenerHueDist > 45 ? 'no-darkener' : 'normal';
         } else if (darkenerHueDist > 45) {
             step3Mode = 'primary-plus-black';
         } else if (l >= black.light) {
@@ -645,6 +645,7 @@ function generateRecipe(h, s, l) {
     }
     const isDarkenerBase = step3Mode.startsWith('darkener-plus-black');
     const isPrimaryPlusBlack = step3Mode === 'primary-plus-black';
+    const isNoDarkener = step3Mode === 'no-darkener';
 
     let recipe = [];
     let html = '';
@@ -846,8 +847,9 @@ function generateRecipe(h, s, l) {
             const compAmount = Math.round((100 - s) * 0.2);
             const whiteAmount = Math.round((100 - s) * 0.15);
             const [cT, wT] = toTeile(compAmount, whiteAmount);
+            const skipWhite = isNoDarkener;
             html += `<div class="info-text">
-                <strong>Deutlich entsättigt</strong> — Grundfarbe mit Komplementär und Weiß mischen:
+                <strong>Deutlich entsättigt</strong> — Grundfarbe mit Komplementär${skipWhite ? '' : ' und Weiß'} mischen:
             </div>`;
             if (primary.dist <= 5) {
                 html += renderPigmentRow(primary, "10 Teile", `Grundfarbe (Hue ${primary.hue}°)`);
@@ -863,8 +865,10 @@ function generateRecipe(h, s, l) {
             }
             html += renderPigmentRow(complement, "~" + teileLabel(cT),
                 `Komplementär (Hue ${complement.hue}°)`);
-            html += renderPigmentRow(white, "~" + teileLabel(wT),
-                `Weiß für Pastellton`);
+            if (!skipWhite) {
+                html += renderPigmentRow(white, "~" + teileLabel(wT),
+                    `Weiß für Pastellton`);
+            }
         } else {
             // s < 20
             const wTeile = Math.round(verylowWhiteFrac * 10);
@@ -999,17 +1003,25 @@ function generateRecipe(h, s, l) {
             waterRatio = "pur";
             waterDrops = "";
             waterText = "Pur auftragen + abdunkeln.";
-            // Normal darkening: hue-aware darkener can reach target
-            // (darkener-plus-black cases handled by early return above)
-            const dkSpan = Math.max(1, adjustedBaseL - darkener.light);
-            const dkTeile = Math.min(10, Math.max(1, Math.round(10 * (adjustedBaseL - l) / dkSpan)));
-            html += renderPigmentRow(darkener, `~${teileLabel(dkTeile)}`,
-                `Zum Abdunkeln (hue-nah, auf 10 Teile Grundfarbe)`);
-            if (complement.id !== darkener.id && dkTeile <= 3) {
-                html += `<div class="info-text">
-                    Alternativ: Statt ${darkener.name} kannst du auch <strong>${complement.name} (${complement.id})</strong>
-                    zum Abdunkeln verwenden — verändert aber den Farbcharakter stärker.
-                </div>`;
+            if (step3Mode === 'no-darkener') {
+                // Darkener hue too far — use black instead to darken without hue shift
+                const bkSpan = Math.max(1, adjustedBaseL - black.light);
+                const bkTeile = Math.min(10, Math.max(1, Math.round(10 * (adjustedBaseL - l) / bkSpan)));
+                html += renderPigmentRow(black, `~${teileLabel(bkTeile)}`,
+                    `Schwarz zum Abdunkeln (Darkener ${darkener.name} zu weit im Farbton)`);
+            } else {
+                // Normal darkening: hue-aware darkener can reach target
+                // (darkener-plus-black cases handled by early return above)
+                const dkSpan = Math.max(1, adjustedBaseL - darkener.light);
+                const dkTeile = Math.min(10, Math.max(1, Math.round(10 * (adjustedBaseL - l) / dkSpan)));
+                html += renderPigmentRow(darkener, `~${teileLabel(dkTeile)}`,
+                    `Zum Abdunkeln (hue-nah, auf 10 Teile Grundfarbe)`);
+                if (complement.id !== darkener.id && dkTeile <= 3) {
+                    html += `<div class="info-text">
+                        Alternativ: Statt ${darkener.name} kannst du auch <strong>${complement.name} (${complement.id})</strong>
+                        zum Abdunkeln verwenden — verändert aber den Farbcharakter stärker.
+                    </div>`;
+                }
             }
         }
 
@@ -1052,7 +1064,7 @@ function generateRecipe(h, s, l) {
             summaryParts.push(`+ Spur <strong>${complement.name}</strong> (${complement.id}) zum Entsättigen`);
         else if (s >= 20 && s < 80)
             summaryParts.push(`+ Spur <strong>${complement.name}</strong> (${complement.id})`);
-        if (s >= 20 && s < 50)
+        if (s >= 20 && s < 50 && !isNoDarkener)
             summaryParts.push(`+ <strong>${white.name}</strong> (${white.id})`);
         else if (s < 20 && verylowTotalWhite > 0)
             summaryParts.push(`+ <strong>${white.name}</strong> (${white.id})`);
@@ -1127,7 +1139,7 @@ renderPalette();
 </script>
 
 <footer style="max-width:700px;margin:30px auto 10px;text-align:center;color:#555;font-size:0.75em;">
-    Letzte Änderung: 18.04.2026
+    Letzte Änderung: 18.04.2026, 23:45
 </footer>
 
 </body>
