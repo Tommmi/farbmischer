@@ -247,6 +247,7 @@ function optimizeWeights(paletteKS, indices, initX, targetLab) {
 }
 
 // Main optimizer: find optimal pigment recipe for a target color
+// Painter's logic: hue neighbors + complementary + black, then optimizer
 // Two-stage model: w_i (normalized weights) determine pigment mix, d (0..1) determines dilution
 // final_KS = d * Σ(w_i * KS_i), pigmentFrac = d
 function findBestRecipe(targetH, targetS, targetL, maxPigments) {
@@ -254,79 +255,165 @@ function findBestRecipe(targetH, targetS, targetL, maxPigments) {
     var targetRgb = hslToRgb(targetH, targetS, targetL);
     var targetLab = rgbToLab(targetRgb.r, targetRgb.g, targetRgb.b);
 
-    // Exclude Opaque White from optimizer (water dilution handles lightening)
     var paletteKS = [];
     for (var i = 0; i < PALETTE.length; i++) {
         var pRgb = hslToRgb(PALETTE[i].hue, PALETTE[i].sat, PALETTE[i].light);
         paletteKS[i] = rgbToKS(pRgb.r, pRgb.g, pRgb.b);
     }
 
+    // Find index of Oxide Black (VG735)
+    var blackIdx = -1;
+    for (var i = 0; i < PALETTE.length; i++) {
+        if (PALETTE[i].id === "VG735") { blackIdx = i; break; }
+    }
+
+    // Build sorted list of chromatic pigments (exclude White and Black)
+    var chromatic = [];
+    for (var i = 0; i < PALETTE.length; i++) {
+        if (PALETTE[i].sat === 0) continue;
+        chromatic.push({ idx: i, hue: PALETTE[i].hue });
+    }
+    chromatic.sort(function(a, b) { return a.hue - b.hue; });
+
+    // Find hue neighbors: two chromatic pigments that bracket targetH on the color wheel
+    function findHueNeighbors(th) {
+        if (chromatic.length === 0) return [];
+        var leftIdx = -1, rightIdx = -1;
+        var leftDist = 999, rightDist = 999;
+        for (var i = 0; i < chromatic.length; i++) {
+            var diff = (chromatic[i].hue - th + 360) % 360;
+            if (diff > 180) diff -= 360;
+            if (diff <= 0 && (-diff) < leftDist) { leftDist = -diff; leftIdx = i; }
+            if (diff >= 0 && diff < rightDist) { rightDist = diff; rightIdx = i; }
+        }
+        if (leftIdx < 0) leftIdx = chromatic.length - 1;
+        if (rightIdx < 0) rightIdx = 0;
+        if (chromatic[leftIdx].idx === chromatic[rightIdx].idx) return [chromatic[leftIdx].idx];
+        return [chromatic[leftIdx].idx, chromatic[rightIdx].idx];
+    }
+
+    // Find complementary pigment (nearest to targetH + 180°)
+    function findComplement(th) {
+        var compHue = (th + 180) % 360;
+        var bestIdx = -1, bestDist = 999;
+        for (var i = 0; i < chromatic.length; i++) {
+            var d = hueDistance(chromatic[i].hue, compHue);
+            if (d < bestDist) { bestDist = d; bestIdx = i; }
+        }
+        return bestIdx >= 0 ? chromatic[bestIdx].idx : -1;
+    }
+
+    // Try a candidate set: optimize weights and return { selected, x, deltaE }
+    function tryCandidate(indices) {
+        var initX = [];
+        for (var i = 0; i < indices.length; i++) initX.push(1.0);
+        var optX = optimizeWeights(paletteKS, indices, initX, targetLab);
+        var res = evalRecipe(paletteKS, indices, optX, targetLab);
+        return { selected: indices, x: optX, deltaE: res.deltaE };
+    }
+
     var globalBestDE = 999;
     var globalBestSelected = [];
     var globalBestX = [];
-    var globalBestD = 1.0;
 
-    // Rank single-pigment starts
-    var startCandidates = [];
-    for (var si = 0; si < PALETTE.length; si++) {
-        if (PALETTE[si].sat === 0 && PALETTE[si].light > 90) continue; // skip white
-        var initX = [1.0];
-        initX = optimizeWeights(paletteKS, [si], initX, targetLab);
-        var sRes = evalRecipe(paletteKS, [si], initX, targetLab);
-        startCandidates.push({ idx: si, de: sRes.deltaE, x: initX[0], d: sRes.d });
+    function updateBest(candidate) {
+        if (candidate.deltaE < globalBestDE) {
+            globalBestDE = candidate.deltaE;
+            globalBestSelected = candidate.selected.slice();
+            globalBestX = candidate.x.slice();
+        }
     }
-    startCandidates.sort(function(a, b) { return a.de - b.de; });
-    var numStarts = Math.min(4, startCandidates.length);
 
-    for (var start = 0; start < numStarts; start++) {
-        var selected = [startCandidates[start].idx];
-        var bestDE = startCandidates[start].de;
-        var bestX = [startCandidates[start].x];
+    function arrayContains(arr, val) {
+        for (var i = 0; i < arr.length; i++) {
+            if (arr[i] === val) return true;
+        }
+        return false;
+    }
 
-        // Greedy pigment addition
-        for (var step = 1; step < maxPigments; step++) {
-            var bestIdx = -1;
-            var bestStepDE = 999;
-            var bestStepX = null;
+    // Find the N closest chromatic pigments by hue distance
+    function findClosestByHue(th, count) {
+        var ranked = [];
+        for (var i = 0; i < chromatic.length; i++) {
+            ranked.push({ idx: chromatic[i].idx, dist: hueDistance(chromatic[i].hue, th) });
+        }
+        ranked.sort(function(a, b) { return a.dist - b.dist; });
+        var result = [];
+        for (var i = 0; i < Math.min(count, ranked.length); i++) {
+            result.push(ranked[i].idx);
+        }
+        return result;
+    }
 
-            for (var i = 0; i < PALETTE.length; i++) {
-                if (PALETTE[i].sat === 0 && PALETTE[i].light > 90) continue; // skip white
-                var already = false;
-                for (var j = 0; j < selected.length; j++) {
-                    if (selected[j] === i) { already = true; break; }
-                }
-                if (already) continue;
+    if (targetS <= 5) {
+        // Achromatic target: use Black only (dilution handles lightness)
+        if (blackIdx >= 0) updateBest(tryCandidate([blackIdx]));
+    } else {
+        var neighbors = findHueNeighbors(targetH);
+        var compIdx = findComplement(targetH);
+        var closest4 = findClosestByHue(targetH, 4);
 
-                var trial = selected.slice();
-                trial.push(i);
-                var trialX = bestX.slice();
-                trialX.push(0.1);
-                trialX = optimizeWeights(paletteKS, trial, trialX, targetLab);
-                var res = evalRecipe(paletteKS, trial, trialX, targetLab);
+        // Strategy 1: Both hue neighbors
+        if (neighbors.length >= 2) {
+            updateBest(tryCandidate(neighbors.slice()));
+        }
 
-                if (res.deltaE < bestStepDE) {
-                    bestStepDE = res.deltaE;
-                    bestIdx = i;
-                    bestStepX = trialX;
-                }
+        // Strategy 2: Both hue neighbors + complementary (desaturation)
+        if (neighbors.length >= 2 && compIdx >= 0 && !arrayContains(neighbors, compIdx)) {
+            var set2 = neighbors.slice();
+            set2.push(compIdx);
+            updateBest(tryCandidate(set2));
+        }
+
+        // Strategy 3: Both hue neighbors + complementary + Black (dark desaturated)
+        if (neighbors.length >= 2 && compIdx >= 0 && blackIdx >= 0 && !arrayContains(neighbors, compIdx)) {
+            var set3 = neighbors.slice();
+            set3.push(compIdx);
+            if (!arrayContains(set3, blackIdx)) set3.push(blackIdx);
+            updateBest(tryCandidate(set3));
+        }
+
+        // Strategy 4: Single nearest-hue pigment (direct hit)
+        if (neighbors.length > 0) {
+            updateBest(tryCandidate([neighbors[0]]));
+            if (neighbors.length >= 2) updateBest(tryCandidate([neighbors[1]]));
+        }
+
+        // Strategy 5: Hue neighbors + Black (dark chromatic without complement)
+        if (neighbors.length >= 2 && blackIdx >= 0 && !arrayContains(neighbors, blackIdx)) {
+            var set5 = neighbors.slice();
+            set5.push(blackIdx);
+            updateBest(tryCandidate(set5));
+        }
+
+        // Strategy 6: Single neighbor + complementary
+        for (var ni = 0; ni < neighbors.length; ni++) {
+            if (compIdx >= 0 && neighbors[ni] !== compIdx) {
+                updateBest(tryCandidate([neighbors[ni], compIdx]));
             }
-
-            if (bestIdx < 0) break;
-            selected.push(bestIdx);
-            bestX = bestStepX;
-            var prevDE = bestDE;
-            bestDE = bestStepDE;
-
-            if (bestDE < 1.0) break;
-            if (prevDE - bestDE < 0.1) break;
         }
 
-        if (bestDE < globalBestDE) {
-            globalBestDE = bestDE;
-            globalBestSelected = selected.slice();
-            globalBestX = bestX.slice();
+        // Strategy 7: Top-4 closest hue pigments (covers palette gaps and clustered hues)
+        if (closest4.length >= 2) {
+            updateBest(tryCandidate(closest4.slice()));
+            // Also try top-4 + complementary
+            if (compIdx >= 0 && !arrayContains(closest4, compIdx) && closest4.length < maxPigments) {
+                var set7c = closest4.slice();
+                set7c.push(compIdx);
+                updateBest(tryCandidate(set7c));
+            }
+            // Try top-4 + black
+            if (blackIdx >= 0 && !arrayContains(closest4, blackIdx) && closest4.length < maxPigments) {
+                var set7b = closest4.slice();
+                set7b.push(blackIdx);
+                updateBest(tryCandidate(set7b));
+            }
         }
-        if (globalBestDE < 1.0) break;
+
+        // Strategy 8: Each of top-4 individually (some palette pigments are near-direct hits)
+        for (var ci = 0; ci < closest4.length; ci++) {
+            updateBest(tryCandidate([closest4[ci]]));
+        }
     }
 
     // Compute final result with normalized weights + dilution
