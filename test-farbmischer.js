@@ -178,10 +178,19 @@ function optimizeDilution(mixK1, mixK2, mixK3, targetLab) {
         de = deltaE76(targetLab, lab);
         if (de < bestDE) { bestDE = de; bestD = d; bestRgb = rgb; }
     }
-    // Refine +-0.1 in 0.01 steps (max 20)
+    // Refine +-0.1 in 0.01 steps
     var lo = Math.max(0, bestD - 0.1);
     var hi = Math.min(1, bestD + 0.1);
     for (d = lo; d <= hi + 0.001; d += 0.01) {
+        rgb = ksToRgb(mixK1 * d, mixK2 * d, mixK3 * d);
+        lab = rgbToLab(rgb.r, rgb.g, rgb.b);
+        de = deltaE76(targetLab, lab);
+        if (de < bestDE) { bestDE = de; bestD = d; bestRgb = rgb; }
+    }
+    // Fine refinement +-0.01 in 0.001 steps (for pale colors where d < 0.1)
+    var lo2 = Math.max(0, bestD - 0.01);
+    var hi2 = Math.min(1, bestD + 0.01);
+    for (d = lo2; d <= hi2 + 0.0001; d += 0.001) {
         rgb = ksToRgb(mixK1 * d, mixK2 * d, mixK3 * d);
         lab = rgbToLab(rgb.r, rgb.g, rgb.b);
         de = deltaE76(targetLab, lab);
@@ -316,8 +325,30 @@ function findBestRecipe(targetH, targetS, targetL, maxPigments) {
     var globalBestSelected = [];
     var globalBestX = [];
 
+    function countEffective(indices, x) {
+        var w = normalizeWeights(x);
+        var count = 0;
+        for (var i = 0; i < w.length; i++) {
+            if (w[i] > 0.005) count++;
+        }
+        return count;
+    }
+
     function updateBest(candidate) {
-        if (candidate.deltaE < globalBestDE) {
+        if (globalBestDE >= 999) {
+            globalBestDE = candidate.deltaE;
+            globalBestSelected = candidate.selected.slice();
+            globalBestX = candidate.x.slice();
+            return;
+        }
+        var newCount = countEffective(candidate.selected, candidate.x);
+        var oldCount = countEffective(globalBestSelected, globalBestX);
+        // Prefer simpler recipe if dE difference is small (< 3 = visually similar)
+        if (newCount < oldCount && candidate.deltaE < globalBestDE + 3.0) {
+            globalBestDE = candidate.deltaE;
+            globalBestSelected = candidate.selected.slice();
+            globalBestX = candidate.x.slice();
+        } else if (candidate.deltaE < globalBestDE) {
             globalBestDE = candidate.deltaE;
             globalBestSelected = candidate.selected.slice();
             globalBestX = candidate.x.slice();
@@ -413,6 +444,10 @@ function findBestRecipe(targetH, targetS, targetL, maxPigments) {
         // Strategy 8: Each of top-4 individually (some palette pigments are near-direct hits)
         for (var ci = 0; ci < closest4.length; ci++) {
             updateBest(tryCandidate([closest4[ci]]));
+            // Also try each + Black (single pigment darkened)
+            if (blackIdx >= 0 && closest4[ci] !== blackIdx) {
+                updateBest(tryCandidate([closest4[ci], blackIdx]));
+            }
         }
     }
 

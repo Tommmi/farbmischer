@@ -563,6 +563,12 @@ function optimizeDilution(mixK1, mixK2, mixK3, targetLab) {
         const de = deltaE76(targetLab, rgbToLab(rgb.r, rgb.g, rgb.b));
         if (de < bestDE) { bestDE = de; bestD = d; bestRgb = rgb; }
     }
+    const lo2 = Math.max(0, bestD - 0.01), hi2 = Math.min(1, bestD + 0.01);
+    for (let d = lo2; d <= hi2 + 0.0001; d += 0.001) {
+        const rgb = ksToRgb(mixK1 * d, mixK2 * d, mixK3 * d);
+        const de = deltaE76(targetLab, rgbToLab(rgb.r, rgb.g, rgb.b));
+        if (de < bestDE) { bestDE = de; bestD = d; bestRgb = rgb; }
+    }
     return { d: bestD, deltaE: bestDE, rgb: bestRgb };
 }
 
@@ -670,8 +676,30 @@ function findBestRecipe(targetH, targetS, targetL, maxPigments) {
 
     let globalBestDE = 999, globalBestSelected = [], globalBestX = [];
 
+    function countEffective(indices, x) {
+        const w = normalizeWeights(x);
+        let count = 0;
+        for (let i = 0; i < w.length; i++) {
+            if (w[i] > 0.005) count++;
+        }
+        return count;
+    }
+
     function updateBest(candidate) {
-        if (candidate.deltaE < globalBestDE) {
+        if (globalBestDE >= 999) {
+            globalBestDE = candidate.deltaE;
+            globalBestSelected = candidate.selected.slice();
+            globalBestX = candidate.x.slice();
+            return;
+        }
+        const newCount = countEffective(candidate.selected, candidate.x);
+        const oldCount = countEffective(globalBestSelected, globalBestX);
+        // Prefer simpler recipe if dE difference is small (< 3 = visually similar)
+        if (newCount < oldCount && candidate.deltaE < globalBestDE + 3.0) {
+            globalBestDE = candidate.deltaE;
+            globalBestSelected = candidate.selected.slice();
+            globalBestX = candidate.x.slice();
+        } else if (candidate.deltaE < globalBestDE) {
             globalBestDE = candidate.deltaE;
             globalBestSelected = candidate.selected.slice();
             globalBestX = candidate.x.slice();
@@ -758,6 +786,9 @@ function findBestRecipe(targetH, targetS, targetL, maxPigments) {
         // Strategy 8: Each of top-4 individually (some palette pigments are near-direct hits)
         for (let ci = 0; ci < closest4.length; ci++) {
             updateBest(tryCandidate([closest4[ci]]));
+            if (blackIdx >= 0 && closest4[ci] !== blackIdx) {
+                updateBest(tryCandidate([closest4[ci], blackIdx]));
+            }
         }
     }
 
@@ -961,7 +992,7 @@ renderPalette();
 </script>
 
 <footer style="max-width:700px;margin:30px auto 10px;text-align:center;color:#555;font-size:0.75em;">
-    Letzte Änderung: 18.04.2026, 23:00
+    Letzte Änderung: 19.04.2026, 00:00
 </footer>
 
 </body>
