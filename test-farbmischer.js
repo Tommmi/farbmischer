@@ -181,9 +181,13 @@ function analyzeRecipe(h, s, l) {
     }
 
     var adjustedBaseL = baseL;
+    var verylowWhiteFrac = 0;
     if (!isNeutral) {
         if (s < 20) {
-            adjustedBaseL = Math.round(baseL * 0.3 + white.light * 0.7);
+            var maxWf = 0.7;
+            var wfForTarget = (l + 10 - baseL) / Math.max(1, white.light - baseL);
+            verylowWhiteFrac = Math.min(maxWf, Math.max(0, wfForTarget));
+            adjustedBaseL = Math.round(baseL * (1 - verylowWhiteFrac) + white.light * verylowWhiteFrac);
         } else if (s < 50) {
             var whiteFrac = (100 - s) * 0.0015;
             adjustedBaseL = Math.round(baseL * (1 - whiteFrac) + white.light * whiteFrac);
@@ -208,7 +212,7 @@ function analyzeRecipe(h, s, l) {
     }
 
     // Summary logic depends on step3 mode (computed below)
-    var summaryHasWhite = !isNeutral && s < 50;
+    var summaryHasWhite = !isNeutral && ((s >= 20 && s < 50) || (s < 20 && verylowWhiteFrac > 0));
 
     // Step 3 effective darkener: in "pur" branch, when darkener can't reach target,
     // use darkener as main base + black (instead of drowning primary in black)
@@ -258,6 +262,7 @@ function analyzeRecipe(h, s, l) {
         waterRatio: waterRatio,
         summaryHasComplement: summaryHasComplement,
         summaryHasWhite: summaryHasWhite,
+        verylowWhiteFrac: verylowWhiteFrac,
         satBranch: isNeutral ? "neutral" : (s >= 80 ? "high" : (s >= 50 ? "mid" : (s >= 20 ? "low" : "verylow")))
     };
 }
@@ -392,12 +397,14 @@ function computeMixedColor(h, s, l) {
                 pigments.push({ rgb: wRgb, teile: wT2 });
             }
         } else {
-            // s < 20: mainly white with little color
-            var wRgb2 = hslToRgb(r.white.hue, r.white.sat, r.white.light);
-            pigments.push({ rgb: wRgb2, teile: 7 });
-            // primary already added above; adjust its teile to 3 total
-            // Replace primary teile
-            pigments[0].teile = 3;
+            // s < 20: variable white based on verylowWhiteFrac
+            var wTeile2 = Math.round(r.verylowWhiteFrac * 10);
+            var cTeile2 = 10 - wTeile2;
+            pigments[0].teile = cTeile2;
+            if (wTeile2 > 0) {
+                var wRgb2 = hslToRgb(r.white.hue, r.white.sat, r.white.light);
+                pigments.push({ rgb: wRgb2, teile: wTeile2 });
+            }
         }
 
         // Step 3: darkener for gap < -5 in the "1:0.5" branch or gap < -15 normal
@@ -607,10 +614,14 @@ WScript.Echo("TEST 19: HSL(240, 15, 20) - dunkles entsaettigtes Blau");
 r = analyzeRecipe(240, 15, 20);
 assert(r.satBranch === "verylow", "Should be verylow");
 assert(!r.summaryHasComplement, "No complement for s<20");
-// VG506 L=38, adjustedBaseL = 38*0.3 + 97*0.7 = 79, gap = 20-79 = -59
-WScript.Echo("  baseL=" + r.baseL + " adjustedBaseL=" + r.adjustedBaseL + " gap=" + r.gap);
-assert(r.gap < -15, "Gap should be very negative (white makes it way too light for L=20), got " + r.gap);
+// VG506 L=38, wfForTarget=(20+10-38)/(97-38)=-0.14 -> 0, no white!
+// adjustedBaseL=38, gap=20-38=-18
+WScript.Echo("  baseL=" + r.baseL + " adjustedBaseL=" + r.adjustedBaseL + " gap=" + r.gap + " whiteFrac=" + r.verylowWhiteFrac.toFixed(2));
+assert(r.verylowWhiteFrac === 0, "No white for dark target (L=20 << baseL=38), got " + r.verylowWhiteFrac);
+assert(r.adjustedBaseL === 38, "AdjustedBaseL should equal baseL (no white), got " + r.adjustedBaseL);
+assert(r.gap === -18, "Gap should be 20-38=-18, got " + r.gap);
 assert(r.waterRatio === "pur", "Water should be pur, got " + r.waterRatio);
+assert(!r.summaryHasWhite, "No white in summary when whiteFrac=0");
 
 // --- Test 20: Ratio-Berechnung korrekt ---
 WScript.Echo("TEST 20: Ratio-Berechnung (Hue genau zwischen zwei Pigmenten)");
@@ -810,6 +821,25 @@ assert(r.step3DarkenerMode === "darkener-plus-black", "Should be darkener-plus-b
 assert(r.step3BlackTeile === 10, "BlackTeile should be capped at 10, got " + r.step3BlackTeile);
 assert(r.step3NeedsLayering, "Should need layering (raw=60 > 10)");
 assert(r.satBranch === "mid", "Sat 50% should be 'mid', got " + r.satBranch);
+
+// --- Test 35a: HSL(27, 15, 62) - helles entsaettigtes Warm-Orange (Bugfix-Test) ---
+WScript.Echo("TEST 35a: HSL(27, 15, 62) - helles entsaettigtes Orange (kein Weiss+Darkener-Widerspruch)");
+r = analyzeRecipe(27, 15, 62);
+WScript.Echo("  Primary: " + r.primary.id + " L=" + r.primary.light + " baseL=" + r.baseL);
+WScript.Echo("  adjustedBaseL=" + r.adjustedBaseL + " gap=" + r.gap + " whiteFrac=" + r.verylowWhiteFrac.toFixed(2));
+WScript.Echo("  waterRatio=" + r.waterRatio + " step3Mode=" + r.step3DarkenerMode);
+// VG278 hue=22, dist=5 -> direct hit, baseL=52
+assert(r.primary.id === "VG278", "Primary should be VG278, got " + r.primary.id);
+assert(r.baseL === 52, "BaseL should be 52, got " + r.baseL);
+// wfForTarget = (62+10-52)/(97-52) = 20/45 = 0.44, adjustedBaseL = round(52*0.56 + 97*0.44) = 72
+assert(r.verylowWhiteFrac > 0 && r.verylowWhiteFrac < 0.7, "WhiteFrac should be reduced (not full 0.7), got " + r.verylowWhiteFrac.toFixed(2));
+assert(r.adjustedBaseL <= 75, "AdjustedBaseL should be <= 75 (not 83 like before!), got " + r.adjustedBaseL);
+assert(r.gap >= -15, "Gap should be >= -15 (no darkener needed!), got " + r.gap);
+assert(r.waterRatio === "1:0.5", "Water should be 1:0.5, got " + r.waterRatio);
+// Key fix: NO darkener-plus-black path, no pur
+assert(r.step3DarkenerMode === "hue-aware", "Should stay hue-aware (no darkener override), got " + r.step3DarkenerMode);
+// Summary should have some white (whiteFrac ~0.44 > 0)
+assert(r.summaryHasWhite, "Should have white in summary (reduced amount)");
 
 // ===================== HSL<->RGB UNIT TESTS =====================
 

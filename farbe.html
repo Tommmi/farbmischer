@@ -593,9 +593,15 @@ function generateRecipe(h, s, l) {
         baseL = Math.round(primary.light * primaryRatio / 100 + secondary.light * secondaryRatio / 100);
     }
     let adjustedBaseL = baseL;
+    let verylowWhiteFrac = 0;
     if (!isNeutral) {
         if (s < 20) {
-            adjustedBaseL = Math.round(baseL * 0.3 + white.light * 0.7);
+            // Cap white fraction so adjustedBaseL doesn't overshoot target L by more than 10
+            // Prevents: adding tons of white then needing darkener to compensate
+            const maxWf = 0.7;
+            const wfForTarget = (l + 10 - baseL) / Math.max(1, white.light - baseL);
+            verylowWhiteFrac = Math.min(maxWf, Math.max(0, wfForTarget));
+            adjustedBaseL = Math.round(baseL * (1 - verylowWhiteFrac) + white.light * verylowWhiteFrac);
         } else if (s < 50) {
             const whiteFrac = (100 - s) * 0.0015;
             adjustedBaseL = Math.round(baseL * (1 - whiteFrac) + white.light * whiteFrac);
@@ -820,14 +826,20 @@ function generateRecipe(h, s, l) {
         html += renderPigmentRow(white, "~" + teileLabel(wT),
             `Für gedeckteren, pastelligeren Ton`);
     } else {
-        html += `<div class="info-text">
-            <strong>Stark entsättigt (${s}%)</strong> — hauptsächlich Weiß mit etwas Farbe:
-        </div>`;
-        html += renderPigmentRow(white, "~7 Teile", `Hauptanteil Weiß`);
-        html += renderPigmentRow(primary, "~3 Teile", `Grundfarbe`);
-        html += `<div class="info-text">
-            Nur wenig Grundfarbe zumischen.
-        </div>`;
+        const wTeile = Math.round(verylowWhiteFrac * 10);
+        const cTeile = 10 - wTeile;
+        if (wTeile === 0) {
+            html += `<div class="info-text">
+                <strong>Stark entsättigt (${s}%)</strong> — Farbe stark mit Wasser verdünnen.
+                Wasserverdünnung entsättigt und hellt gleichzeitig auf.
+            </div>`;
+        } else {
+            html += `<div class="info-text">
+                <strong>Stark entsättigt (${s}%)</strong> — Weiß für gedeckten Pastellton:
+            </div>`;
+            html += renderPigmentRow(white, "~" + teileLabel(wTeile), `Weiß für Entsättigung`);
+            html += renderPigmentRow(primary, "~" + teileLabel(cTeile), `Grundfarbe`);
+        }
     }
 
     html += `</div>`;
@@ -955,7 +967,9 @@ function generateRecipe(h, s, l) {
         summaryParts.push(`<strong>${primary.name}</strong> (${primary.id})`);
         if (s >= 20 && s < 80)
             summaryParts.push(`+ Spur <strong>${complement.name}</strong> (${complement.id})`);
-        if (s < 50)
+        if (s >= 20 && s < 50)
+            summaryParts.push(`+ <strong>${white.name}</strong> (${white.id})`);
+        else if (s < 20 && verylowWhiteFrac > 0)
             summaryParts.push(`+ <strong>${white.name}</strong> (${white.id})`);
     }
 
