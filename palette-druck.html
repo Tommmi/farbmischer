@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Van Gogh Aquarell-Palette</title>
+<style>
+  @page { margin: 15mm; }
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    max-width: 700px;
+    margin: 20px auto;
+    padding: 0 20px;
+  }
+  h1 {
+    text-align: center;
+    margin-bottom: 30px;
+    font-size: 22px;
+  }
+  .color-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 12px;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  }
+  .color-label {
+    flex: 1;
+    padding: 14px 20px;
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .color-id {
+    padding: 14px 16px;
+    font-size: 13px;
+    opacity: 0.8;
+    min-width: 120px;
+    text-align: right;
+  }
+  @media print {
+    body { margin: 0; padding: 0; }
+    .color-row { break-inside: avoid; box-shadow: none; border: 1px solid #ccc; }
+    .no-print { display: none; }
+  }
+</style>
+</head>
+<body>
+<h1>Van Gogh Aquarell-Palette — 25 Farben</h1>
+<div id="palette"></div>
+<p class="no-print" style="text-align:center; margin-top:30px; color:#888; font-size:14px;">
+  Strg+P → als PDF speichern
+</p>
+<script>
+const PALETTE = [
+  { id: "VG254", name: "Perm. Lemon Yellow",       hex: "#F0E040", pigment: "PY184" },
+  { id: "VG272", name: "Transparent Yellow Med.",   hex: "#DEB030", pigment: "PY128" },
+  { id: "VG244", name: "Indian Yellow",             hex: "#D49820", pigment: "PY83"  },
+  { id: "VG227", name: "Yellow Ochre",              hex: "#BF9640", pigment: "PY42"  },
+  { id: "VG296", name: "Azomethine Green Yellow",   hex: "#7EA830", pigment: "PY129" },
+  { id: "VG278", name: "Pyrrole Orange",            hex: "#E86820", pigment: "PO73"  },
+  { id: "VG370", name: "Permanent Red Light",       hex: "#D83828", pigment: "PR255" },
+  { id: "VG371", name: "Permanent Red Deep",        hex: "#842020", pigment: "PR149" },
+  { id: "VG331", name: "Madder Lake Deep",          hex: "#782030", pigment: "PR264" },
+  { id: "VG339", name: "Light Oxide Red",           hex: "#9E5838", pigment: "PR101" },
+  { id: "VG366", name: "Quinacridone Rose",         hex: "#C03058", pigment: "PV19"  },
+  { id: "VG567", name: "Perm. Red Violet",          hex: "#9C2860", pigment: "PV19"  },
+  { id: "VG592", name: "Quin. Purple Red",          hex: "#842858", pigment: "PV55"  },
+  { id: "VG593", name: "Quin. Purple Blue",         hex: "#6A2068", pigment: "PV55"  },
+  { id: "VG568", name: "Perm. Blue Violet",         hex: "#381068", pigment: "PV23"  },
+  { id: "VG506", name: "Ultramarine Deep",          hex: "#2028A0", pigment: "PB29"  },
+  { id: "VG570", name: "Phthalo Blue",              hex: "#084080", pigment: "PB15"  },
+  { id: "VG508", name: "Prussian Blue",             hex: "#0E3050", pigment: "PB27"  },
+  { id: "VG522", name: "Turquoise Blue",            hex: "#148078", pigment: "PB15+PG7" },
+  { id: "VG633", name: "Perm. Yellowish Green",     hex: "#30A848", pigment: "PY154+PG7" },
+  { id: "VG675", name: "Phthalo Green",             hex: "#086040", pigment: "PG7"   },
+  { id: "VG411", name: "Burnt Sienna",              hex: "#8A4820", pigment: "PR101" },
+  { id: "VG409", name: "Burnt Umber",               hex: "#503018", pigment: "PBr7"  },
+  { id: "VG735", name: "Oxide Black",               hex: "#181818", pigment: "PBk11" },
+  { id: "VG106", name: "Opaque White",              hex: "#F8F8F8", pigment: "PW6"   },
+];
+
+function textColor(hex) {
+  var r = parseInt(hex.substr(1,2),16);
+  var g = parseInt(hex.substr(3,2),16);
+  var b = parseInt(hex.substr(5,2),16);
+  // Relative luminance
+  var lum = (0.299*r + 0.587*g + 0.114*b);
+  return lum > 140 ? "#000000" : "#FFFFFF";
+}
+
+var container = document.getElementById("palette");
+PALETTE.forEach(function(p) {
+  var fg = textColor(p.hex);
+  var row = document.createElement("div");
+  row.className = "color-row";
+  row.style.backgroundColor = p.hex;
+  row.style.color = fg;
+  row.innerHTML =
+    '<div class="color-label">' + p.id + ' — ' + p.name + '</div>' +
+    '<div class="color-id">' + p.pigment + ' &nbsp; ' + p.hex + '</div>';
+  container.appendChild(row);
+});
+</script>
+</body>
+</html>
