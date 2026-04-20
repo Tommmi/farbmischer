@@ -29,6 +29,8 @@ var PALETTE = [
     { id: "VG106", name: "Opaque White",              hue: 0,   sat: 0,  light: 97, hex: "#F8F8F8", pigment: "PW6"   }
 ];
 
+var OPAQUE_WHITE_INDEX = PALETTE.length - 1;
+
 // ===================== UTILITY FUNCTIONS =====================
 
 function hueDistance(h1, h2) {
@@ -148,37 +150,143 @@ function deltaE76(lab1, lab2) {
 
 // ===================== OPTIMIZER =====================
 
-// Normalize weights so they sum to 1, return copy
-function normalizeWeights(x) {
-    var sum = 0, i;
-    var w = x.slice();
-    for (i = 0; i < w.length; i++) {
-        if (w[i] < 0) w[i] = 0;
-        sum += w[i];
+function pushUniqueApprox(arr, value) {
+    var v = Math.max(0, Math.min(1, value));
+    for (var i = 0; i < arr.length; i++) {
+        if (Math.abs(arr[i] - v) < 0.0005) return;
     }
-    if (sum <= 0) {
-        w[0] = 1;
-        for (i = 1; i < w.length; i++) w[i] = 0;
-        return w;
-    }
-    for (i = 0; i < w.length; i++) w[i] = w[i] / sum;
-    return w;
+    arr.push(v);
 }
 
-// Find optimal dilution d for a given undiluted mixture KS
-// Uses target L* to estimate d, then refines
-// Returns { d, deltaE, rgb }
-function optimizeDilution(mixK1, mixK2, mixK3, targetLab) {
-    var bestD = 0, bestDE = 999, bestRgb = null;
+function projectConcentrations(x) {
+    var y = x.slice();
+    var sum = 0, i;
+    for (i = 0; i < y.length; i++) {
+        if (y[i] < 0) y[i] = 0;
+        sum += y[i];
+    }
+    if (sum > 1.0) {
+        for (i = 0; i < y.length; i++) y[i] = y[i] / sum;
+        sum = 1.0;
+    }
+    return { x: y, total: sum };
+}
+
+function getDeltaEClass(deltaE) {
+    if (deltaE < 1.0) return 0;
+    if (deltaE < 2.0) return 1;
+    if (deltaE < 3.0) return 2;
+    if (deltaE < 5.0) return 3;
+    if (deltaE < 8.0) return 4;
+    if (deltaE < 12.0) return 5;
+    if (deltaE < 20.0) return 6;
+    if (deltaE < 30.0) return 7;
+    if (deltaE < 45.0) return 8;
+    if (deltaE < 70.0) return 9;
+    return 10;
+}
+
+function getLightnessPenalty(targetL, pigmentFrac) {
+    if (targetL >= 85 && pigmentFrac > 0.15) return 2;
+    if (targetL >= 75 && pigmentFrac > 0.40) return 1;
+    if (targetL >= 60 && pigmentFrac > 0.85) return 2;
+    if (targetL >= 65 && pigmentFrac > 0.75) return 1;
+    if (targetL >= 55 && pigmentFrac > 0.95) return 1;
+    return 0;
+}
+
+function evalConcentrationRecipe(paletteKS, rawX, targetLab, targetL) {
+    var projected = projectConcentrations(rawX);
+    var x = projected.x;
+    var total = projected.total;
+    var mixK1 = 0, mixK2 = 0, mixK3 = 0;
+    var i;
+    for (i = 0; i < x.length; i++) {
+        mixK1 += x[i] * paletteKS[i].k1;
+        mixK2 += x[i] * paletteKS[i].k2;
+        mixK3 += x[i] * paletteKS[i].k3;
+    }
+
+    var rgb = total > 0.000001 ? ksToRgb(mixK1, mixK2, mixK3) : { r: 255, g: 255, b: 255 };
+    var lab = rgbToLab(rgb.r, rgb.g, rgb.b);
+    var deltaE = deltaE76(targetLab, lab);
+
+    var weights = [];
+    var activeCount = 0, effectiveCount = 0, traceCount = 0;
+    for (i = 0; i < x.length; i++) {
+        var share = total > 0 ? x[i] / total : 0;
+        weights.push(share);
+        if (x[i] >= 0.001) activeCount++;
+        if (x[i] >= 0.01 && share >= 0.06) effectiveCount++;
+        else if (x[i] >= 0.003 && share >= 0.015) traceCount++;
+    }
+
+    return {
+        x: x,
+        weights: weights,
+        totalConcentration: total,
+        pigmentFrac: total,
+        mixK1: mixK1,
+        mixK2: mixK2,
+        mixK3: mixK3,
+        rgb: rgb,
+        lab: lab,
+        deltaE: deltaE,
+        qualityBand: getDeltaEClass(deltaE),
+        rankingBand: getDeltaEClass(deltaE) + (x[OPAQUE_WHITE_INDEX] >= 0.003 ? 1 : 0) + getLightnessPenalty(targetL, total),
+        activeCount: activeCount,
+        effectiveCount: effectiveCount,
+        traceCount: traceCount,
+        opaqueWhiteAmount: x[OPAQUE_WHITE_INDEX],
+        usesOpaqueWhite: x[OPAQUE_WHITE_INDEX] >= 0.003 ? 1 : 0
+    };
+}
+
+function isBetterRecipe(candidate, current, maxPigments) {
+    if (!current) return true;
+    if (candidate.deltaE < current.deltaE - 0.75) return true;
+    if (candidate.rankingBand !== current.rankingBand) return candidate.rankingBand < current.rankingBand;
+    if (candidate.usesOpaqueWhite !== current.usesOpaqueWhite && Math.abs(candidate.deltaE - current.deltaE) < 1.0) {
+        return candidate.usesOpaqueWhite < current.usesOpaqueWhite;
+    }
+    if (Math.abs(candidate.deltaE - current.deltaE) < 0.75 && Math.abs(candidate.pigmentFrac - current.pigmentFrac) > 0.08) {
+        return candidate.pigmentFrac < current.pigmentFrac;
+    }
+
+    var candOver = candidate.effectiveCount > maxPigments ? 1 : 0;
+    var curOver = current.effectiveCount > maxPigments ? 1 : 0;
+    if (candOver !== curOver) return candOver < curOver;
+    if (candidate.effectiveCount !== current.effectiveCount) return candidate.effectiveCount < current.effectiveCount;
+    if (candidate.traceCount !== current.traceCount) return candidate.traceCount < current.traceCount;
+    if (candidate.activeCount !== current.activeCount) return candidate.activeCount < current.activeCount;
+    return candidate.deltaE < current.deltaE - 0.001;
+}
+
+function countDisplayPigments(recipe) {
+    var count = 0;
+    for (var i = 0; i < recipe.x.length; i++) {
+        if (recipe.x[i] >= 0.003 && recipe.weights[i] >= 0.015) count++;
+    }
+    return count;
+}
+
+function optimizeDilutionForWeights(paletteKS, weights, targetLab) {
+    var mixK1 = 0, mixK2 = 0, mixK3 = 0;
+    var i;
+    for (i = 0; i < weights.length; i++) {
+        mixK1 += weights[i] * paletteKS[i].k1;
+        mixK2 += weights[i] * paletteKS[i].k2;
+        mixK3 += weights[i] * paletteKS[i].k3;
+    }
+
+    var bestD = 0, bestDE = 999, bestRgb = { r: 255, g: 255, b: 255 };
     var d, rgb, lab, de;
-    // Quick scan: 11 steps
     for (d = 0.0; d <= 1.001; d += 0.1) {
         rgb = ksToRgb(mixK1 * d, mixK2 * d, mixK3 * d);
         lab = rgbToLab(rgb.r, rgb.g, rgb.b);
         de = deltaE76(targetLab, lab);
         if (de < bestDE) { bestDE = de; bestD = d; bestRgb = rgb; }
     }
-    // Refine +-0.1 in 0.01 steps
     var lo = Math.max(0, bestD - 0.1);
     var hi = Math.min(1, bestD + 0.1);
     for (d = lo; d <= hi + 0.001; d += 0.01) {
@@ -187,306 +295,165 @@ function optimizeDilution(mixK1, mixK2, mixK3, targetLab) {
         de = deltaE76(targetLab, lab);
         if (de < bestDE) { bestDE = de; bestD = d; bestRgb = rgb; }
     }
-    // Fine refinement +-0.01 in 0.001 steps (for pale colors where d < 0.1)
-    var lo2 = Math.max(0, bestD - 0.01);
-    var hi2 = Math.min(1, bestD + 0.01);
-    for (d = lo2; d <= hi2 + 0.0001; d += 0.001) {
-        rgb = ksToRgb(mixK1 * d, mixK2 * d, mixK3 * d);
-        lab = rgbToLab(rgb.r, rgb.g, rgb.b);
-        de = deltaE76(targetLab, lab);
-        if (de < bestDE) { bestDE = de; bestD = d; bestRgb = rgb; }
-    }
     return { d: bestD, deltaE: bestDE, rgb: bestRgb };
 }
 
-// Evaluate deltaE for weights x (will be normalized) + optimal dilution
-// Two-stage model: mix pigments with normalized weights, then dilute
-function evalRecipe(paletteKS, indices, x, targetLab) {
-    var w = normalizeWeights(x);
-    var mixK1 = 0, mixK2 = 0, mixK3 = 0;
-    for (var j = 0; j < indices.length; j++) {
-        mixK1 += w[j] * paletteKS[indices[j]].k1;
-        mixK2 += w[j] * paletteKS[indices[j]].k2;
-        mixK3 += w[j] * paletteKS[indices[j]].k3;
+function simplifyToMaxPigments(paletteKS, recipe, targetLab, targetL, maxPigments) {
+    var current = recipe;
+    while (countDisplayPigments(current) > maxPigments) {
+        var bestRemoval = null;
+        for (var i = 0; i < current.x.length; i++) {
+            if (current.x[i] < 0.003 || current.weights[i] < 0.015) continue;
+            var candidateX = current.x.slice();
+            candidateX[i] = 0;
+            var candidate = evalConcentrationRecipe(paletteKS, candidateX, targetLab, targetL);
+            if (!bestRemoval || candidate.deltaE < bestRemoval.deltaE) bestRemoval = candidate;
+        }
+        if (!bestRemoval) break;
+        current = bestRemoval;
     }
-    var dilResult = optimizeDilution(mixK1, mixK2, mixK3, targetLab);
-    return { deltaE: dilResult.deltaE, d: dilResult.d, w: w,
-             mixK1: mixK1, mixK2: mixK2, mixK3: mixK3, rgb: dilResult.rgb };
+    return current;
 }
 
-// Optimize weights via coordinate descent on deltaE
-function optimizeWeights(paletteKS, indices, initX, targetLab) {
-    var n = indices.length;
+function refineRecipeScale(paletteKS, recipe, targetLab, targetL) {
+    if (recipe.totalConcentration <= 0.000001) return recipe;
+    var refined = optimizeDilutionForWeights(paletteKS, recipe.weights, targetLab);
+    var x = [];
+    for (var i = 0; i < recipe.weights.length; i++) x.push(recipe.weights[i] * refined.d);
+    return evalConcentrationRecipe(paletteKS, x, targetLab, targetL);
+}
+
+function optimizeConcentrations(paletteKS, targetLab, targetL, initX, searchOrder, maxPigments) {
     var x = initX.slice();
-    var cur = evalRecipe(paletteKS, indices, x, targetLab);
-    var bestDE = cur.deltaE;
-    var factors = [0.0, 0.3, 0.7, 1.5, 3.0];
-    for (var iter = 0; iter < 15; iter++) {
+    var current = evalConcentrationRecipe(paletteKS, x, targetLab, targetL);
+    var factors = [0.0, 0.25, 0.5, 0.8, 1.2, 1.6, 2.2];
+    var absTrials = [0.0, 0.0015, 0.004, 0.01, 0.025, 0.05, 0.1, 0.2, 0.35, 0.5, 0.7, 1.0];
+    var iter, oi, f, a, t;
+
+    for (iter = 0; iter < 14; iter++) {
         var improved = false;
-        for (var i = 0; i < n; i++) {
-            var origX = x[i];
-            for (var f = 0; f < factors.length; f++) {
-                x[i] = origX * factors[f];
-                var res = evalRecipe(paletteKS, indices, x, targetLab);
-                if (res.deltaE < bestDE - 0.005) {
-                    bestDE = res.deltaE;
-                    origX = x[i];
+        for (oi = 0; oi < searchOrder.length; oi++) {
+            var idx = searchOrder[oi];
+            var orig = x[idx];
+            var trials = [];
+
+            for (f = 0; f < factors.length; f++) pushUniqueApprox(trials, orig * factors[f]);
+            pushUniqueApprox(trials, orig - 0.02);
+            pushUniqueApprox(trials, orig + 0.02);
+            pushUniqueApprox(trials, orig - 0.05);
+            pushUniqueApprox(trials, orig + 0.05);
+            for (a = 0; a < absTrials.length; a++) pushUniqueApprox(trials, absTrials[a]);
+
+            for (t = 0; t < trials.length; t++) {
+                var candidateX = x.slice();
+                candidateX[idx] = trials[t];
+                var candidate = evalConcentrationRecipe(paletteKS, candidateX, targetLab, targetL);
+                if (isBetterRecipe(candidate, current, maxPigments)) {
+                    x = candidate.x.slice();
+                    current = candidate;
                     improved = true;
-                } else {
-                    x[i] = origX;
-                }
-            }
-            // Also try small absolute values
-            var absTrials = [0.01, 0.1, 0.5];
-            for (var a = 0; a < absTrials.length; a++) {
-                x[i] = absTrials[a];
-                var res2 = evalRecipe(paletteKS, indices, x, targetLab);
-                if (res2.deltaE < bestDE - 0.005) {
-                    bestDE = res2.deltaE;
-                    origX = x[i];
-                    improved = true;
-                } else {
-                    x[i] = origX;
                 }
             }
         }
         if (!improved) break;
     }
-    return x;
+
+    for (iter = 0; iter < 2; iter++) {
+        var simplified = false;
+        for (oi = 0; oi < searchOrder.length; oi++) {
+            var simplifyIdx = searchOrder[oi];
+            if (x[simplifyIdx] < 0.001) continue;
+            var simplifyX = x.slice();
+            simplifyX[simplifyIdx] = 0;
+            var simplifiedCandidate = evalConcentrationRecipe(paletteKS, simplifyX, targetLab, targetL);
+            if (isBetterRecipe(simplifiedCandidate, current, maxPigments)) {
+                x = simplifiedCandidate.x.slice();
+                current = simplifiedCandidate;
+                simplified = true;
+            }
+        }
+        if (!simplified) break;
+    }
+
+    return current;
 }
 
-// Main optimizer: find optimal pigment recipe for a target color
-// Painter's logic: hue neighbors + complementary + black, then optimizer
-// Two-stage model: w_i (normalized weights) determine pigment mix, d (0..1) determines dilution
-// final_KS = d * Σ(w_i * KS_i), pigmentFrac = d
 function findBestRecipe(targetH, targetS, targetL, maxPigments) {
     if (!maxPigments) maxPigments = 5;
     var targetRgb = hslToRgb(targetH, targetS, targetL);
     var targetLab = rgbToLab(targetRgb.r, targetRgb.g, targetRgb.b);
 
     var paletteKS = [];
-    for (var i = 0; i < PALETTE.length; i++) {
+    var searchOrder = [];
+    var i;
+    for (i = 0; i < PALETTE.length; i++) {
         var pRgb = hslToRgb(PALETTE[i].hue, PALETTE[i].sat, PALETTE[i].light);
         paletteKS[i] = rgbToKS(pRgb.r, pRgb.g, pRgb.b);
+        searchOrder.push(i);
     }
 
-    // Find index of Oxide Black (VG735)
-    var blackIdx = -1;
-    for (var i = 0; i < PALETTE.length; i++) {
-        if (PALETTE[i].id === "VG735") { blackIdx = i; break; }
+    searchOrder.sort(function(a, b) {
+        var hueA = hueDistance(PALETTE[a].hue, targetH);
+        var hueB = hueDistance(PALETTE[b].hue, targetH);
+        if (Math.abs(hueA - hueB) > 0.001) return hueA - hueB;
+        var satA = Math.abs(PALETTE[a].sat - targetS);
+        var satB = Math.abs(PALETTE[b].sat - targetS);
+        if (Math.abs(satA - satB) > 0.001) return satA - satB;
+        return Math.abs(PALETTE[a].light - targetL) - Math.abs(PALETTE[b].light - targetL);
+    });
+
+    var seeds = [];
+    var zero = [];
+    for (i = 0; i < PALETTE.length; i++) zero.push(0);
+    seeds.push(zero.slice());
+    for (i = 0; i < Math.min(8, searchOrder.length); i++) {
+        var pureSeed = zero.slice();
+        pureSeed[searchOrder[i]] = 1.0;
+        seeds.push(pureSeed);
+    }
+    for (i = 0; i < Math.min(4, searchOrder.length); i++) {
+        var lightSeed = zero.slice();
+        lightSeed[searchOrder[i]] = 0.18;
+        seeds.push(lightSeed);
     }
 
-    // Build sorted list of chromatic pigments (exclude White and Black)
-    var chromatic = [];
-    for (var i = 0; i < PALETTE.length; i++) {
-        if (PALETTE[i].sat === 0) continue;
-        chromatic.push({ idx: i, hue: PALETTE[i].hue });
+    var best = null;
+    for (i = 0; i < seeds.length; i++) {
+        var candidate = optimizeConcentrations(paletteKS, targetLab, targetL, seeds[i], searchOrder, maxPigments);
+        if (isBetterRecipe(candidate, best, maxPigments)) best = candidate;
     }
-    chromatic.sort(function(a, b) { return a.hue - b.hue; });
+    best = simplifyToMaxPigments(paletteKS, best, targetLab, targetL, maxPigments);
+    best = refineRecipeScale(paletteKS, best, targetLab, targetL);
 
-    // Find hue neighbors: two chromatic pigments that bracket targetH on the color wheel
-    function findHueNeighbors(th) {
-        if (chromatic.length === 0) return [];
-        var leftIdx = -1, rightIdx = -1;
-        var leftDist = 999, rightDist = 999;
-        for (var i = 0; i < chromatic.length; i++) {
-            var diff = (chromatic[i].hue - th + 360) % 360;
-            if (diff > 180) diff -= 360;
-            if (diff <= 0 && (-diff) < leftDist) { leftDist = -diff; leftIdx = i; }
-            if (diff >= 0 && diff < rightDist) { rightDist = diff; rightIdx = i; }
-        }
-        if (leftIdx < 0) leftIdx = chromatic.length - 1;
-        if (rightIdx < 0) rightIdx = 0;
-        if (chromatic[leftIdx].idx === chromatic[rightIdx].idx) return [chromatic[leftIdx].idx];
-        return [chromatic[leftIdx].idx, chromatic[rightIdx].idx];
-    }
-
-    // Find complementary pigment (nearest to targetH + 180°)
-    function findComplement(th) {
-        var compHue = (th + 180) % 360;
-        var bestIdx = -1, bestDist = 999;
-        for (var i = 0; i < chromatic.length; i++) {
-            var d = hueDistance(chromatic[i].hue, compHue);
-            if (d < bestDist) { bestDist = d; bestIdx = i; }
-        }
-        return bestIdx >= 0 ? chromatic[bestIdx].idx : -1;
-    }
-
-    // Try a candidate set: optimize weights and return { selected, x, deltaE }
-    function tryCandidate(indices) {
-        var initX = [];
-        for (var i = 0; i < indices.length; i++) initX.push(1.0);
-        var optX = optimizeWeights(paletteKS, indices, initX, targetLab);
-        var res = evalRecipe(paletteKS, indices, optX, targetLab);
-        return { selected: indices, x: optX, deltaE: res.deltaE };
-    }
-
-    var globalBestDE = 999;
-    var globalBestSelected = [];
-    var globalBestX = [];
-
-    function countEffective(indices, x) {
-        var w = normalizeWeights(x);
-        var count = 0;
-        for (var i = 0; i < w.length; i++) {
-            if (w[i] > 0.005) count++;
-        }
-        return count;
-    }
-
-    function updateBest(candidate) {
-        if (globalBestDE >= 999) {
-            globalBestDE = candidate.deltaE;
-            globalBestSelected = candidate.selected.slice();
-            globalBestX = candidate.x.slice();
-            return;
-        }
-        var newCount = countEffective(candidate.selected, candidate.x);
-        var oldCount = countEffective(globalBestSelected, globalBestX);
-        // Prefer simpler recipe if dE difference is small (< 3 = visually similar)
-        if (newCount < oldCount && candidate.deltaE < globalBestDE + 3.0) {
-            globalBestDE = candidate.deltaE;
-            globalBestSelected = candidate.selected.slice();
-            globalBestX = candidate.x.slice();
-        } else if (candidate.deltaE < globalBestDE) {
-            globalBestDE = candidate.deltaE;
-            globalBestSelected = candidate.selected.slice();
-            globalBestX = candidate.x.slice();
-        }
-    }
-
-    function arrayContains(arr, val) {
-        for (var i = 0; i < arr.length; i++) {
-            if (arr[i] === val) return true;
-        }
-        return false;
-    }
-
-    // Find the N closest chromatic pigments by hue distance
-    function findClosestByHue(th, count) {
-        var ranked = [];
-        for (var i = 0; i < chromatic.length; i++) {
-            ranked.push({ idx: chromatic[i].idx, dist: hueDistance(chromatic[i].hue, th) });
-        }
-        ranked.sort(function(a, b) { return a.dist - b.dist; });
-        var result = [];
-        for (var i = 0; i < Math.min(count, ranked.length); i++) {
-            result.push(ranked[i].idx);
-        }
-        return result;
-    }
-
-    if (targetS <= 5) {
-        // Achromatic target: use Black only (dilution handles lightness)
-        if (blackIdx >= 0) updateBest(tryCandidate([blackIdx]));
-    } else {
-        var neighbors = findHueNeighbors(targetH);
-        var compIdx = findComplement(targetH);
-        var closest4 = findClosestByHue(targetH, 4);
-
-        // Strategy 1: Both hue neighbors
-        if (neighbors.length >= 2) {
-            updateBest(tryCandidate(neighbors.slice()));
-        }
-
-        // Strategy 2: Both hue neighbors + complementary (desaturation)
-        if (neighbors.length >= 2 && compIdx >= 0 && !arrayContains(neighbors, compIdx)) {
-            var set2 = neighbors.slice();
-            set2.push(compIdx);
-            updateBest(tryCandidate(set2));
-        }
-
-        // Strategy 3: Both hue neighbors + complementary + Black (dark desaturated)
-        if (neighbors.length >= 2 && compIdx >= 0 && blackIdx >= 0 && !arrayContains(neighbors, compIdx)) {
-            var set3 = neighbors.slice();
-            set3.push(compIdx);
-            if (!arrayContains(set3, blackIdx)) set3.push(blackIdx);
-            updateBest(tryCandidate(set3));
-        }
-
-        // Strategy 4: Single nearest-hue pigment (direct hit)
-        if (neighbors.length > 0) {
-            updateBest(tryCandidate([neighbors[0]]));
-            if (neighbors.length >= 2) updateBest(tryCandidate([neighbors[1]]));
-        }
-
-        // Strategy 5: Hue neighbors + Black (dark chromatic without complement)
-        if (neighbors.length >= 2 && blackIdx >= 0 && !arrayContains(neighbors, blackIdx)) {
-            var set5 = neighbors.slice();
-            set5.push(blackIdx);
-            updateBest(tryCandidate(set5));
-        }
-
-        // Strategy 6: Single neighbor + complementary
-        for (var ni = 0; ni < neighbors.length; ni++) {
-            if (compIdx >= 0 && neighbors[ni] !== compIdx) {
-                updateBest(tryCandidate([neighbors[ni], compIdx]));
-            }
-        }
-
-        // Strategy 7: Top-4 closest hue pigments (covers palette gaps and clustered hues)
-        if (closest4.length >= 2) {
-            updateBest(tryCandidate(closest4.slice()));
-            // Also try top-4 + complementary
-            if (compIdx >= 0 && !arrayContains(closest4, compIdx) && closest4.length < maxPigments) {
-                var set7c = closest4.slice();
-                set7c.push(compIdx);
-                updateBest(tryCandidate(set7c));
-            }
-            // Try top-4 + black
-            if (blackIdx >= 0 && !arrayContains(closest4, blackIdx) && closest4.length < maxPigments) {
-                var set7b = closest4.slice();
-                set7b.push(blackIdx);
-                updateBest(tryCandidate(set7b));
-            }
-        }
-
-        // Strategy 8: Each of top-4 individually (some palette pigments are near-direct hits)
-        for (var ci = 0; ci < closest4.length; ci++) {
-            updateBest(tryCandidate([closest4[ci]]));
-            // Also try each + Black (single pigment darkened)
-            if (blackIdx >= 0 && closest4[ci] !== blackIdx) {
-                updateBest(tryCandidate([closest4[ci], blackIdx]));
-            }
-        }
-    }
-
-    // Compute final result with normalized weights + dilution
-    var finalRes = evalRecipe(paletteKS, globalBestSelected, globalBestX, targetLab);
-    var finalW = finalRes.w;
-    var pigmentFrac = finalRes.d;
-
-    // Build result - filter out near-zero weight pigments
     var resultPigments = [];
-    for (var j = 0; j < globalBestSelected.length; j++) {
-        if (finalW[j] > 0.005) {
+    for (i = 0; i < best.x.length; i++) {
+        if (best.x[i] >= 0.003 && best.weights[i] >= 0.015) {
             resultPigments.push({
-                palette: PALETTE[globalBestSelected[j]],
-                weight: finalW[j]
+                palette: PALETTE[i],
+                concentration: best.x[i],
+                weight: best.weights[i]
             });
         }
     }
 
-    // Compute final mixed RGB using diluted K/S
-    var mixRgb = finalRes.rgb;
-    var mixHsl = rgbToHsl(mixRgb.r, mixRgb.g, mixRgb.b);
+    resultPigments.sort(function(a, b) { return b.weight - a.weight; });
 
-    // Convert to relative weights (Teile: max=10)
     var maxW = 0;
-    for (var j = 0; j < resultPigments.length; j++) {
-        if (resultPigments[j].weight > maxW) maxW = resultPigments[j].weight;
+    for (i = 0; i < resultPigments.length; i++) {
+        if (resultPigments[i].weight > maxW) maxW = resultPigments[i].weight;
     }
-    for (var j = 0; j < resultPigments.length; j++) {
-        resultPigments[j].teile = Math.max(1, Math.round(resultPigments[j].weight / maxW * 10));
+    for (i = 0; i < resultPigments.length; i++) {
+        resultPigments[i].teile = Math.max(1, Math.round(resultPigments[i].weight / maxW * 10));
     }
 
     return {
         pigments: resultPigments,
-        deltaE: globalBestDE,
-        totalConcentration: pigmentFrac,
-        pigmentFrac: pigmentFrac,
-        mixRgb: mixRgb,
-        mixHsl: mixHsl,
+        deltaE: best.deltaE,
+        qualityBand: best.qualityBand,
+        totalConcentration: best.totalConcentration,
+        pigmentFrac: best.pigmentFrac,
+        mixRgb: best.rgb,
+        mixHsl: rgbToHsl(best.rgb.r, best.rgb.g, best.rgb.b),
         targetRgb: targetRgb,
         targetLab: targetLab
     };
@@ -806,6 +773,18 @@ for (var hue = 0; hue < 360; hue += 60) {
     }
 }
 assert(!opt7Fail, "OPT7: Too many pigments");
+
+WScript.Echo("OPT8: Warm pink wraparound target HSL(337,71,65)");
+var opt8 = findBestRecipe(337, 71, 65);
+var opt8HasWarmRed = false;
+WScript.Echo("  dE=" + opt8.deltaE.toFixed(2) + " water=" + opt8.pigmentFrac.toFixed(3));
+for (var i = 0; i < opt8.pigments.length; i++) {
+    WScript.Echo("    " + opt8.pigments[i].palette.id + " " + opt8.pigments[i].palette.name +
+        " teile=" + opt8.pigments[i].teile);
+    if (opt8.pigments[i].palette.id === "VG370") opt8HasWarmRed = true;
+}
+assert(opt8.deltaE < 2, "OPT8: dE < 2, got " + opt8.deltaE.toFixed(2));
+assert(opt8HasWarmRed, "OPT8: Warm pink should include VG370 correction");
 
 // ===================== SIMULATION (computeMixedColor) TESTS =====================
 
